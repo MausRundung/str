@@ -4,7 +4,10 @@
  */
 function parseToGraph(text) {
     let projectPath = null;
-    let localRegistry = [];
+    let localRegistry =[];
+    let globalModels = [];
+    let globalState =[];
+    
     const root = { name: "ROOT", type: "dir", children: {}, path: "ROOT" };
     let activeFile = null;
     const lines = text.split('\n');
@@ -22,13 +25,26 @@ function parseToGraph(text) {
     // 2. Build Tree
     lines.forEach(line => {
         const raw = line.trim();
-        if (!raw || raw.startsWith('===') || raw.startsWith('[MODELS]') || (raw.startsWith('[STATE ]') && raw.includes("DbContext"))) return;
+        if (!raw || raw.startsWith('===')) return;
+
+        // Parse global non-file-bound data tags
+        if (raw.startsWith('[MODELS]') && !activeFile) {
+            const content = raw.substring(raw.indexOf(']') + 1).trim();
+            globalModels = content.split(',').map(s => s.trim()).filter(Boolean);
+            return;
+        }
+        
+        if (raw.startsWith('[STATE ]') && !activeFile) {
+            const content = raw.substring(raw.indexOf(']') + 1).trim();
+            globalState = content.split(',').map(s => s.trim()).filter(Boolean);
+            return;
+        }
 
         if (raw.startsWith('FILE:')) {
             const match = raw.match(/FILE: \\(.*) \((\d+) lines\)/);
             if (match) {
                 const pathStr = "ROOT\\" + match[1];
-                const lineCount = match[2];
+                const lineCount = parseInt(match[2], 10);
                 const parts = pathStr.split('\\');
                 let curr = root;
                 
@@ -36,8 +52,8 @@ function parseToGraph(text) {
                     if (i === parts.length - 1) {
                         const fileObj = { 
                             id: pathStr, name: part, lines: lineCount, 
-                            routes: [], sockets: { emits: [], ons: [] }, imports: [], 
-                            tables: [], state: [], exports: [], types: [] 
+                            routes:[], sockets: { emits: [], ons: [] }, imports: [], 
+                            tables: [], state:[], exports: [], types: [] 
                         };
                         curr.children[part] = fileObj;
                         localRegistry.push(fileObj);
@@ -51,21 +67,25 @@ function parseToGraph(text) {
         } else if (raw.startsWith('[DIR]')) {
             activeFile = null;
         } else if (activeFile) {
-            const tagMatch = raw.match(/^\s*\[\s*([A-Z]+)\s*\]/);
+            // Note: The regex uses \s+ inside the brackets to tolerate tags like "[TYPES ]"
+            const tagMatch = raw.match(/^\s*\[\s*([A-Z\s]+)\s*\]/);
             if (!tagMatch) return;
             
-            const tag = tagMatch[1];
+            const tag = tagMatch[1].trim();
             const content = raw.substring(raw.indexOf(']') + 1).trim();
             const items = content.split(',').map(s => s.trim()).filter(Boolean);
 
             switch (tag) {
                 case 'ROUTES':
-                    const routeMatches = content.match(/\[(.*?)\] (.*?) -> (.*?)(?=\s*\[|$)/g);
-                    if (routeMatches) {
-                        activeFile.routes = routeMatches.map(m => {
-                            const parts = m.match(/\[(.*?)\] (.*?) -> (.*)/);
-                            return parts ? { method: parts[1], path: parts[2] } : null;
-                        }).filter(Boolean);
+                    // Enhanced RegEx to capture handlers safely (e.g. "[USE] /api/auth -> authRoutes" OR "[GET] /api/health")
+                    const routePattern = /\[(.*?)\]\s*(.*?)(?:\s*->\s*(.*?))?(?=(?:\s*\[|$))/g;
+                    let routeMatch;
+                    while ((routeMatch = routePattern.exec(content)) !== null) {
+                        activeFile.routes.push({
+                            method: routeMatch[1],
+                            path: routeMatch[2].trim(),
+                            handler: routeMatch[3] ? routeMatch[3].trim() : null
+                        });
                     }
                     break;
                 case 'SOCKET':
@@ -83,5 +103,5 @@ function parseToGraph(text) {
         }
     });
 
-    return { root, projectPath, registry: localRegistry };
+    return { root, projectPath, registry: localRegistry, globalModels, globalState };
 }

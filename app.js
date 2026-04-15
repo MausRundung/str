@@ -3,10 +3,14 @@
  * Global State & Orchestration
  */
 let fileRegistry = [];
-let relationLinks = [];
+let relationLinks =[];
 let activeFileDomId = null;
 let activeChips = new Set();
 let projectBasePath = null;
+
+// New: Keep track of global structures unattached to files
+let globalModelsRegistry = []; 
+let globalStateRegistry =[];
 
 // Initialization
 document.addEventListener('DOMContentLoaded', () => { lucide.createIcons(); });
@@ -21,6 +25,8 @@ function buildSystem() {
     const parsed = parseToGraph(txt);
     fileRegistry = parsed.registry;
     projectBasePath = parsed.projectPath;
+    globalModelsRegistry = parsed.globalModels;
+    globalStateRegistry = parsed.globalState;
 
     document.getElementById('tree-container').innerHTML = renderTree(parsed.root);
     
@@ -31,14 +37,27 @@ function buildSystem() {
 
 function mapRelations() {
     const consolidatedLinks = new Map();
-    const nameMap = new Map();
+    const pathMap = new Map();
     
-    // Create a robust mapping of filename (without extension) to registry entry
+    // 1. Build an exact lookup mapping using relative paths without extensions
     fileRegistry.forEach(f => {
-        const baseName = f.name.replace(/\.[^/.]+$/, "");
-        nameMap.set(baseName, f);
-        // Also map by full ID for direct matches
-        nameMap.set(f.id, f);
+        // Example: ROOT\modules\Files\utils.tsx -> ROOT\modules\Files\utils
+        const idWithoutExt = f.id.replace(/\.[^/.\\]+$/, "");
+        pathMap.set(idWithoutExt, f);
+        
+        // Handle index resolution (e.g. imports mapping to a folder -> folder/index)
+        if (idWithoutExt.endsWith('\\index')) {
+            pathMap.set(idWithoutExt.replace(/\\index$/, ""), f);
+        }
+    });
+
+    // 2. Performance Fix: Pre-compute socket listeners for O(1) lookups later
+    const socketOnMap = new Map();
+    fileRegistry.forEach(f => {
+        f.sockets.ons.forEach(evt => {
+            if (!socketOnMap.has(evt)) socketOnMap.set(evt, new Set());
+            socketOnMap.get(evt).add(f);
+        });
     });
 
     const addReason = (source, target, reason) => {
@@ -49,30 +68,59 @@ function mapRelations() {
                 target: 'f_' + btoa(target.id).replace(/[^a-zA-Z0-9]/g, ''),
                 sourcePath: source.id,
                 targetPath: target.id,
-                reasons: []
+                reasons:[]
             });
         }
         consolidatedLinks.get(key).reasons.push(reason);
     };
 
+    // Helper: Resolves e.g., "../types" relative to "ROOT\modules\Files\utils.tsx"
+    const resolveImportPath = (currentFilePath, importPath) => {
+        if (!importPath.startsWith('.')) return null; // Ignore node_modules
+        
+        const currentParts = currentFilePath.replace(/\\/g, '/').split('/');
+        currentParts.pop(); // Remove current filename
+        
+        const importParts = importPath.split('/');
+        for (let part of importParts) {
+            if (part === '.') continue;
+            if (part === '..') {
+                if (currentParts.length > 1) currentParts.pop(); // Don't escape ROOT
+            } else {
+                currentParts.push(part);
+            }
+        }
+        return currentParts.join('\\');
+    };
+
     fileRegistry.forEach(src => {
-        // Map Imports (Outbound)
+        // Map Local Imports accurately 
         src.imports.forEach(imp => {
-            const tgtName = imp.split('/').pop().replace(/\.[^/.]+$/, "");
-            const tgt = nameMap.get(tgtName);
-            if (tgt && tgt.id !== src.id) {
-                addReason(src, tgt, { type: 'import', detail: imp, direction: 'out' });
+            const resolvedPath = resolveImportPath(src.id, imp);
+            if (resolvedPath) {
+                // Strip the extension from the resolved target in case of .js / .ts discrepancy
+                const cleanTargetId = resolvedPath.replace(/\.[^/.\\]+$/, "");
+                const tgt = pathMap.get(cleanTargetId);
+                
+                if (tgt && tgt.id !== src.id) {
+                    addReason(src, tgt, { type: 'import', detail: imp, direction: 'out' });
+                }
             }
         });
-        // Map Sockets
+
+        // Map Sockets using the fast lookup table
         src.sockets.emits.forEach(emitEvt => {
-            fileRegistry.forEach(tgt => {
-                if (src.id !== tgt.id && tgt.sockets.ons.includes(emitEvt)) {
-                    addReason(src, tgt, { type: 'socket', detail: emitEvt, direction: 'out' });
-                }
-            });
+            const targets = socketOnMap.get(emitEvt);
+            if (targets) {
+                targets.forEach(tgt => {
+                    if (src.id !== tgt.id) {
+                        addReason(src, tgt, { type: 'socket', detail: emitEvt, direction: 'out' });
+                    }
+                });
+            }
         });
     });
+    
     relationLinks = Array.from(consolidatedLinks.values());
 }
 
@@ -140,7 +188,7 @@ function refreshManifest() {
     
     // Logic for Relationships (Imports/Dependents)
     const outboundDeps = []; // Files I import
-    const inboundDeps = [];  // Files that import me
+    const inboundDeps =[];  // Files that import me
 
     relationLinks.forEach(link => {
         if (link.reasons.some(r => r.type === 'import')) {
@@ -165,7 +213,7 @@ function refreshManifest() {
             tags = items.emits.map(e => `<span class="data-tag socket-emit">EMIT: ${e}</span>`).join('') +
                    items.ons.map(o => `<span class="data-tag socket-on">ON: ${o}</span>`).join('');
         } else {
-            tags = items.map(i => `<span class="data-tag ${tagType}">${tagType === 'routes' ? `[${i.method}] ${i.path}` : i}</span>`).join('');
+            tags = items.map(i => `<span class="data-tag ${tagType}">${tagType === 'routes' ? `[${i.method}] ${i.path}${i.handler ? ` -> ${i.handler}`:''}` : i}</span>`).join('');
         }
         return `
             <div class="manifest-section">
@@ -196,7 +244,13 @@ function clearSelection() {
     document.getElementById("reset-btn").style.display = "none";
     document.getElementById("copy-btn").disabled = true;
     document.querySelectorAll(".file-card, .folder-block").forEach(el => el.classList.remove("hidden-node", "isolated-target", "active-focus"));
-    document.getElementById("inspector-content").innerHTML = "Select a file for isolation analysis.";
+    
+    let defaultHtml = "Select a file for isolation analysis.";
+    if (globalModelsRegistry.length > 0) {
+        defaultHtml += `<div style="margin-top:20px; font-size:11px; color:#888;">Project contains ${globalModelsRegistry.length} database models.</div>`;
+    }
+
+    document.getElementById("inspector-content").innerHTML = defaultHtml;
     filterSystem();
 }
 

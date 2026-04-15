@@ -6,18 +6,19 @@ function renderTree(node) {
     if (node.id) {
         // File Node
         const domId = 'f_' + btoa(node.id).replace(/[^a-zA-Z0-9]/g, '');
-        let detailItems = [];
+        let detailItems =[];
         
         const toTags = (items, type) => {
             if (!items || (Array.isArray(items) && items.length === 0)) return '';
             let content = '';
             switch(type) {
                 case 'routes': 
-                    content = items.map(r => `<span class="data-tag route"><span class="method">${r.method}</span> ${r.path}</span>`).join(''); 
+                    // Now supports displaying the route handler if it exists
+                    content = items.map(r => `<span class="data-tag route"><span class="method">${r.method}</span> ${r.path}${r.handler ? ` <span style="opacity: 0.6; margin-left:4px;">-> ${r.handler}</span>` : ''}</span>`).join(''); 
                     break;
                 case 'sockets': 
-                    content += (items.emits || []).map(e => `<span class="data-tag socket-emit">EMIT: ${e}</span>`).join('');
-                    content += (items.ons || []).map(o => `<span class="data-tag socket-on">ON: ${o}</span>`).join('');
+                    content += (items.emits ||[]).map(e => `<span class="data-tag socket-emit">EMIT: ${e}</span>`).join('');
+                    content += (items.ons ||[]).map(o => `<span class="data-tag socket-on">ON: ${o}</span>`).join('');
                     break;
                 case 'tables': content = items.map(t => `<span class="data-tag table">${t}</span>`).join(''); break;
                 case 'types': content = items.map(t => `<span class="data-tag type">${t}</span>`).join(''); break;
