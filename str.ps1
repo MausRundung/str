@@ -20,7 +20,7 @@ foreach ($arg in $args) {
 # --- HELP MENU ---
 if ($Path -eq "help") {
     Write-Host "`n=== POLYGLOT ARCHITECT HELP ===" -ForegroundColor Yellow
-    Write-Host "Usage: str [Path] [Flags][--exportname]" -ForegroundColor Cyan
+    Write-Host "Usage: str [Path] [Flags] [--exportname]" -ForegroundColor Cyan
     Write-Host "`nFLAGS:" -ForegroundColor Gray
     Write-Host "  -f    Files: Shows all file names in the tree."
     Write-Host "  -r    Routes: Extracts API endpoints AND Handler functions."
@@ -213,33 +213,92 @@ Log "============================================================`n" "Cyan"
 if ($ExportFile) {
     $finalOutput = '```text' + "`n" + ($OutputLog -join "`n") + "`n" + '```'
     Set-Content -Path $ExportFile -Value $finalOutput
-    
-    $successMsg = '> EXPORT SUCCESS: Saved map to ' + $ExportFile
-    Write-Host $successMsg -ForegroundColor Green
-    Write-Host '  (Ready to be pasted into ChatGPT/Claude)' -ForegroundColor Gray
+    Write-Host "> EXPORT SUCCESS: Saved map to $ExportFile" -ForegroundColor Green
+    exit
 }
 
-# --- AUTO-VIEWER LINK ---
+# --- AUTO-VIEWER HTTP SERVER ---
 $scriptDir = $PSScriptRoot
 if ([string]::IsNullOrEmpty($scriptDir)) { $scriptDir = (Get-Location).Path }
 
-$htmlPath = Join-Path -Path $scriptDir -ChildPath "index.html"
-if (Test-Path $htmlPath) {
-    $jsDataPath = Join-Path -Path $scriptDir -ChildPath "str-data.js"
-    $rawText = $OutputLog -join "`n"
-    $bt = [string][char]96
-    
-    # Securely escape backslashes, backticks, and dollar signs for JS template literal evaluation
-    $safeText = $rawText.Replace('\', '\\').Replace($bt, "\$bt").Replace('$', '\$')
-    $jsContent = "window.STR_AUTO_DATA = $bt$safeText$bt;"
-    
+$port = 45000
+$listener = New-Object System.Net.HttpListener
+$maxTries = 10
+
+while ($maxTries -gt 0) {
     try {
-        Set-Content -Path $jsDataPath -Value $jsContent -Encoding UTF8 -ErrorAction Stop
-        $localUri = "file:///" + ($htmlPath -replace '\\', '/')
-        Write-Host "> VIEWER READY: " -ForegroundColor Green -NoNewline
-        Write-Host $localUri -ForegroundColor Cyan
-        Write-Host "  (Ctrl+Click to open in browser)`n" -ForegroundColor Gray
+        $listener.Prefixes.Clear()
+        $listener.Prefixes.Add("http://localhost:$port/")
+        $listener.Start()
+        break
     } catch {
-        Write-Host "> Could not create auto-viewer link (Check file permissions for $scriptDir)`n" -ForegroundColor DarkGray
+        $port++
+        $maxTries--
+    }
+}
+
+if (-not $listener.IsListening) {
+    Write-Host "`n> Error: Could not bind to a local port to start the viewer." -ForegroundColor Red
+    exit
+}
+
+$url = "http://localhost:$port/"
+Write-Host "`n> VIEWER SERVER READY: " -ForegroundColor Green -NoNewline
+Write-Host $url -ForegroundColor Cyan
+Write-Host "  (Press Ctrl+C to stop the server and return to terminal)`n" -ForegroundColor Gray
+
+# Open in Default Web Browser (because it's http:// instead of file://)
+Start-Process $url
+
+try {
+    while ($listener.IsListening) {
+        $context = $listener.GetContext()
+        $request = $context.Request
+        $response = $context.Response
+
+        # Prevent browser caching
+        $response.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+
+        $reqPath = $request.Url.LocalPath
+        if ($reqPath -eq "/") { $reqPath = "/index.html" }
+
+        # Serve dynamic scan data directly from memory
+        if ($reqPath -eq "/str-data.js") {
+            $rawText = $OutputLog -join "`n"
+            $bt = [string][char]96
+            $safeText = $rawText.Replace('\', '\\').Replace($bt, "\$bt").Replace('$', '\$')
+            $content = "window.STR_AUTO_DATA = $bt$safeText$bt;"
+            $buffer = [System.Text.Encoding]::UTF8.GetBytes($content)
+            
+            $response.ContentType = "application/javascript"
+            $response.ContentLength64 = $buffer.Length
+            $response.OutputStream.Write($buffer, 0, $buffer.Length)
+        } 
+        # Serve static assets from the script's directory
+        else {
+            $filePath = Join-Path -Path $scriptDir -ChildPath $reqPath.TrimStart('/')
+            if (Test-Path $filePath -PathType Leaf) {
+                $ext =[System.IO.Path]::GetExtension($filePath)
+                switch ($ext) {
+                    ".html" { $response.ContentType = "text/html" }
+                    ".js"   { $response.ContentType = "application/javascript" }
+                    ".css"  { $response.ContentType = "text/css" }
+                    default { $response.ContentType = "application/octet-stream" }
+                }
+                $buffer =[System.IO.File]::ReadAllBytes($filePath)
+                $response.ContentLength64 = $buffer.Length
+                $response.OutputStream.Write($buffer, 0, $buffer.Length)
+            } else {
+                $response.StatusCode = 404
+            }
+        }
+        $response.OutputStream.Close()
+    }
+} catch {
+    # Suppress errors if the pipeline closes abruptly
+} finally {
+    if ($listener -ne $null) {
+        $listener.Stop()
+        $listener.Close()
     }
 }
