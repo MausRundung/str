@@ -289,9 +289,71 @@ function handleContentToggle(cls) {
 }
 
 function copySystemReport() {
-    const b = document.getElementById("copy-btn");
-    b.innerText = "COPIED";
-    setTimeout(() => b.innerText = "COPY", 2000);
+    if (!activeFileDomId) return;
+    
+    const cardEl = document.getElementById(activeFileDomId);
+    if (!cardEl) return;
+    
+    const filePath = cardEl.dataset.path;
+    const file = fileRegistry.find(f => f.id === filePath);
+    if (!file) return;
+
+    // 1. Gather Relationship Data
+    const outboundDeps = [];
+    const inboundDeps =[];
+
+    relationLinks.forEach(link => {
+        if (link.reasons.some(r => r.type === 'import')) {
+            if (link.sourcePath === filePath) {
+                const targetFile = fileRegistry.find(f => f.id === link.targetPath);
+                if (targetFile) outboundDeps.push(targetFile.name);
+            } else if (link.targetPath === filePath) {
+                const sourceFile = fileRegistry.find(f => f.id === link.sourcePath);
+                if (sourceFile) inboundDeps.push(sourceFile.name);
+            }
+        }
+    });
+
+    // 2. Build the Text Report
+    let report = `FILE MANIFEST: ${file.id.replace('ROOT\\', '')} (${file.lines} lines)\n`;
+    report += `=========================================================\n\n`;
+
+    if (outboundDeps.length > 0) {
+        report += `Dependencies (Imports):\n${outboundDeps.map(d => `  - ${d}`).join('\n')}\n\n`;
+    }
+    
+    if (inboundDeps.length > 0) {
+        report += `Reliant Components (Used By):\n${inboundDeps.map(d => `  - ${d}`).join('\n')}\n\n`;
+    }
+
+    if (file.routes && file.routes.length > 0) {
+        report += `API Routes:\n${file.routes.map(r => `  -[${r.method}] ${r.path}${r.handler ? ` -> ${r.handler}`:''}`).join('\n')}\n\n`;
+    }
+
+    if (file.sockets && (file.sockets.emits.length > 0 || file.sockets.ons.length > 0)) {
+        report += `Socket Events:\n`;
+        file.sockets.emits.forEach(e => report += `  - EMIT: ${e}\n`);
+        file.sockets.ons.forEach(o => report += `  - ON: ${o}\n`);
+        report += `\n`;
+    }
+
+    if (file.tables && file.tables.length > 0) {
+        report += `Database Tables:\n${file.tables.map(t => `  - ${t}`).join('\n')}\n\n`;
+    }
+
+    if (file.exports && file.exports.length > 0) {
+        report += `Exports:\n${file.exports.map(e => `  - ${e}`).join('\n')}\n\n`;
+    }
+
+    // 3. Write to Clipboard
+    navigator.clipboard.writeText(report.trim()).then(() => {
+        const b = document.getElementById("copy-btn");
+        b.innerText = "COPIED";
+        setTimeout(() => b.innerText = "COPY", 2000);
+    }).catch(err => {
+        console.error("Failed to copy report: ", err);
+        alert("Clipboard copy failed. Please ensure you are running in a secure context (HTTPS/localhost).");
+    });
 }
 
 function refreshSelection() {
