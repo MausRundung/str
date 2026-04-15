@@ -59,7 +59,7 @@ function mapRelations() {
     });
 
     const addReason = (source, target, reason) => {
-        const key = [source.id, target.id].sort().join('--');
+        const key =[source.id, target.id].sort().join('--');
         if (!consolidatedLinks.has(key)) {
             consolidatedLinks.set(key, { 
                 source: 'f_' + btoa(source.id).replace(/[^a-zA-Z0-9]/g, ''), 
@@ -177,10 +177,10 @@ function refreshManifest() {
     
     let h = `<div class="manifest-filepath">${file.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')} <span class="manifest-lines">(${file.lines} lines)</span></div>`;
     
-    const outboundDeps = [];
+    const outboundDeps =[];
     const inboundDeps =[];
 
-    // Bundle exactly formatted filepaths for UI Rendering
+    // Bundle exact filepaths AND available Shared Functions (exports) for UI Rendering
     relationLinks.forEach(link => {
         if (link.reasons.some(r => r.type === 'import')) {
             if (link.sourcePath === filePath) {
@@ -188,6 +188,7 @@ function refreshManifest() {
                 if (targetFile) outboundDeps.push({ 
                     name: targetFile.name, 
                     path: targetFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/'),
+                    exports: targetFile.exports, // Pass shared exports
                     domId: link.target 
                 });
             } else if (link.targetPath === filePath) {
@@ -195,6 +196,7 @@ function refreshManifest() {
                 if (sourceFile) inboundDeps.push({ 
                     name: sourceFile.name, 
                     path: sourceFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/'),
+                    exports: sourceFile.exports, // Pass shared exports
                     domId: link.source 
                 });
             }
@@ -207,7 +209,18 @@ function refreshManifest() {
         
         let tags = "";
         if (isRelation) {
-            tags = items.map(rel => `<span class="data-tag relation-node" onclick="handleSelect('${rel.domId}')" title="${rel.path}"><i data-lucide="file-text" size="10"></i> ${rel.name} <span style="opacity: 0.6; margin-left: 4px; font-weight: normal; font-size: 0.9em;">(${rel.path})</span></span>`).join('');
+            tags = items.map(rel => {
+                // Display shared functions { Foo, Bar } if the target file exports them
+                let exportsBadge = rel.exports && rel.exports.length > 0 
+                    ? `<span style="color: #60a5fa; margin-left: 6px; font-weight: 500;">{ ${rel.exports.join(', ')} }</span>` 
+                    : '';
+                
+                return `<span class="data-tag relation-node" onclick="handleSelect('${rel.domId}')" title="${rel.path}">
+                    <i data-lucide="file-text" size="10"></i> ${rel.name} 
+                    <span style="opacity: 0.6; margin-left: 4px; font-weight: normal; font-size: 0.9em;">(${rel.path})</span>
+                    ${exportsBadge}
+                </span>`;
+            }).join('');
         } else if (tagType === 'sockets') {
             tags = items.emits.map(e => `<span class="data-tag socket-emit">EMIT: ${e}</span>`).join('') +
                    items.ons.map(o => `<span class="data-tag socket-on">ON: ${o}</span>`).join('');
@@ -300,15 +313,21 @@ function copySystemReport() {
     const outboundDeps =[];
     const inboundDeps =[];
 
-    // Directly bind the formatted file path into the generated copy list
+    // Include the formatted file path AND the { Shared Functions } interface in the text output
     relationLinks.forEach(link => {
         if (link.reasons.some(r => r.type === 'import')) {
             if (link.sourcePath === filePath) {
                 const targetFile = fileRegistry.find(f => f.id === link.targetPath);
-                if (targetFile) outboundDeps.push(`${targetFile.name} (${targetFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')})`);
+                if (targetFile) {
+                    const funcShares = targetFile.exports && targetFile.exports.length > 0 ? ` { ${targetFile.exports.join(', ')} }` : '';
+                    outboundDeps.push(`${targetFile.name} (${targetFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')})${funcShares}`);
+                }
             } else if (link.targetPath === filePath) {
                 const sourceFile = fileRegistry.find(f => f.id === link.sourcePath);
-                if (sourceFile) inboundDeps.push(`${sourceFile.name} (${sourceFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')})`);
+                if (sourceFile) {
+                    const funcShares = sourceFile.exports && sourceFile.exports.length > 0 ? ` { ${sourceFile.exports.join(', ')} }` : '';
+                    inboundDeps.push(`${sourceFile.name} (${sourceFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')})${funcShares}`);
+                }
             }
         }
     });
