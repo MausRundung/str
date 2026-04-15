@@ -20,7 +20,7 @@ foreach ($arg in $args) {
 # --- HELP MENU ---
 if ($Path -eq "help") {
     Write-Host "`n=== POLYGLOT ARCHITECT HELP ===" -ForegroundColor Yellow
-    Write-Host "Usage: str [Path] [Flags] [--exportname]" -ForegroundColor Cyan
+    Write-Host "Usage: str [Path] [Flags][--exportname]" -ForegroundColor Cyan
     Write-Host "`nFLAGS:" -ForegroundColor Gray
     Write-Host "  -f    Files: Shows all file names in the tree."
     Write-Host "  -r    Routes: Extracts API endpoints AND Handler functions."
@@ -58,9 +58,7 @@ Log "`n=== ANALYZING ARCHITECTURE: $($rootPath) ===" "Cyan"
 $langPatterns = @{
     js = @{
         routes = @(
-            # Fixed: Now perfectly ignores middlewares and handles dot-notation handlers like AuthController.register
             '(?i)\b(?<var>[a-zA-Z0-9_]+)\.(?<method>get|post|put|delete|patch|use|all)\s*\(\s*[''"](?<route>\/[^''"]*|\*[^''"]*)[''"](?:[^()]*?,\s*(?<handler>[a-zA-Z0-9_.]+)\s*\))?',
-            # Catches Next.js App Router endpoints
             '(?m)^[ \t]*export\s+(?:async\s+)?function\s+(?<method>GET|POST|PUT|DELETE|PATCH)\b'
         )
         imports = @(
@@ -80,9 +78,7 @@ $langPatterns = @{
             '(?ms)\b(?:export\s+)?(?:interface|type)\s+(?<val>[a-zA-Z0-9_]+)'
         )
         exports = @(
-            # Catches: export const X, export abstract class Y, export enum Z
             '(?m)\bexport\s+(?:default\s+)?(?:async\s+)?(?:abstract\s+)?(?:const|let|var|function|class|enum)\s+(?<val>[a-zA-Z0-9_]+)',
-            # Catches: export default router; (where there is no preceding variable declaration)
             '(?m)\bexport\s+default\s+(?!(?:async|abstract|const|let|var|function|class|enum)\b)(?<val>[a-zA-Z0-9_]+)'
         )
     }
@@ -106,7 +102,7 @@ $data = Get-ChildItem -Path $rootPath -Recurse -Attributes !Hidden | Where-Objec
     $_.FullName -notmatch $dirRegex -and $_.FullName -notmatch $fileRegex
 } | ForEach-Object {
     $item = $_
-    $info = [PSCustomObject]@{
+    $info =[PSCustomObject]@{
         FullName = $item.FullName; Type = if ($item.PSIsContainer) { "Directory" } else { "File" }
         Lines = 0; Imports = @(); Routes = @(); Sockets = @(); DbTables = @(); Contexts = @(); Interfaces = @(); Exports = @()
     }
@@ -221,4 +217,29 @@ if ($ExportFile) {
     $successMsg = '> EXPORT SUCCESS: Saved map to ' + $ExportFile
     Write-Host $successMsg -ForegroundColor Green
     Write-Host '  (Ready to be pasted into ChatGPT/Claude)' -ForegroundColor Gray
+}
+
+# --- AUTO-VIEWER LINK ---
+$scriptDir = $PSScriptRoot
+if ([string]::IsNullOrEmpty($scriptDir)) { $scriptDir = (Get-Location).Path }
+
+$htmlPath = Join-Path -Path $scriptDir -ChildPath "index.html"
+if (Test-Path $htmlPath) {
+    $jsDataPath = Join-Path -Path $scriptDir -ChildPath "str-data.js"
+    $rawText = $OutputLog -join "`n"
+    $bt = [string][char]96
+    
+    # Securely escape backslashes, backticks, and dollar signs for JS template literal evaluation
+    $safeText = $rawText.Replace('\', '\\').Replace($bt, "\$bt").Replace('$', '\$')
+    $jsContent = "window.STR_AUTO_DATA = $bt$safeText$bt;"
+    
+    try {
+        Set-Content -Path $jsDataPath -Value $jsContent -Encoding UTF8 -ErrorAction Stop
+        $localUri = "file:///" + ($htmlPath -replace '\\', '/')
+        Write-Host "> VIEWER READY: " -ForegroundColor Green -NoNewline
+        Write-Host $localUri -ForegroundColor Cyan
+        Write-Host "  (Ctrl+Click to open in browser)`n" -ForegroundColor Gray
+    } catch {
+        Write-Host "> Could not create auto-viewer link (Check file permissions for $scriptDir)`n" -ForegroundColor DarkGray
+    }
 }
