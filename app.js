@@ -2,7 +2,7 @@
 /**
  * Global State & Orchestration
  */
-let fileRegistry = [];
+let fileRegistry =[];
 let relationLinks =[];
 let activeFileDomId = null;
 let activeChips = new Set();
@@ -41,17 +41,15 @@ function mapRelations() {
     
     // 1. Build an exact lookup mapping using relative paths without extensions
     fileRegistry.forEach(f => {
-        // Example: ROOT\modules\Files\utils.tsx -> ROOT\modules\Files\utils
         const idWithoutExt = f.id.replace(/\.[^/.\\]+$/, "");
         pathMap.set(idWithoutExt, f);
         
-        // Handle index resolution (e.g. imports mapping to a folder -> folder/index)
         if (idWithoutExt.endsWith('\\index')) {
             pathMap.set(idWithoutExt.replace(/\\index$/, ""), f);
         }
     });
 
-    // 2. Performance Fix: Pre-compute socket listeners for O(1) lookups later
+    // 2. Performance Fix: Pre-compute socket listeners
     const socketOnMap = new Map();
     fileRegistry.forEach(f => {
         f.sockets.ons.forEach(evt => {
@@ -74,18 +72,17 @@ function mapRelations() {
         consolidatedLinks.get(key).reasons.push(reason);
     };
 
-    // Helper: Resolves e.g., "../types" relative to "ROOT\modules\Files\utils.tsx"
     const resolveImportPath = (currentFilePath, importPath) => {
-        if (!importPath.startsWith('.')) return null; // Ignore node_modules
+        if (!importPath.startsWith('.')) return null; 
         
         const currentParts = currentFilePath.replace(/\\/g, '/').split('/');
-        currentParts.pop(); // Remove current filename
+        currentParts.pop(); 
         
         const importParts = importPath.split('/');
         for (let part of importParts) {
             if (part === '.') continue;
             if (part === '..') {
-                if (currentParts.length > 1) currentParts.pop(); // Don't escape ROOT
+                if (currentParts.length > 1) currentParts.pop(); 
             } else {
                 currentParts.push(part);
             }
@@ -94,11 +91,9 @@ function mapRelations() {
     };
 
     fileRegistry.forEach(src => {
-        // Map Local Imports accurately 
         src.imports.forEach(imp => {
             const resolvedPath = resolveImportPath(src.id, imp);
             if (resolvedPath) {
-                // Strip the extension from the resolved target in case of .js / .ts discrepancy
                 const cleanTargetId = resolvedPath.replace(/\.[^/.\\]+$/, "");
                 const tgt = pathMap.get(cleanTargetId);
                 
@@ -108,7 +103,6 @@ function mapRelations() {
             }
         });
 
-        // Map Sockets using the fast lookup table
         src.sockets.emits.forEach(emitEvt => {
             const targets = socketOnMap.get(emitEvt);
             if (targets) {
@@ -130,7 +124,7 @@ function handleFileCardClick(event) {
         event.preventDefault();
         const card = event.currentTarget;
         if (!projectBasePath) return alert("Base path unknown.");
-        const relativePath = card.dataset.path.replace('ROOT\\', '').replace(/\\/g, '/'); 
+        const relativePath = card.dataset.path.replace(/^ROOT\\/, '').replace(/\\/g, '/'); 
         window.location.href = `trae://file/${projectBasePath}/${relativePath}`;
     }
 }
@@ -157,7 +151,6 @@ function refreshManifest() {
     const showImp = document.getElementById('opt-imports').checked;
     const showSoc = document.getElementById('opt-sockets').checked;
     
-    // Filter links connected to this file
     const connectedLinks = relationLinks.filter(link => {
         const hasSocket = link.reasons.some(r => r.type === 'socket');
         const hasImport = link.reasons.some(r => r.type === 'import');
@@ -171,7 +164,6 @@ function refreshManifest() {
         relatedDomIds.add(link.target);
     });
     
-    // Visual Isolation
     document.querySelectorAll('.file-card').forEach(el => {
         el.classList.remove('isolated-target', 'active-focus', 'hidden-node');
         if (el.id === domId) el.classList.add('isolated-target');
@@ -183,21 +175,28 @@ function refreshManifest() {
         f.classList.toggle('hidden-node', !f.querySelector('.file-card:not(.hidden-node)'));
     });
     
-    // BUILD MANIFEST HTML
-    let h = `<div class="manifest-filepath">${file.id.replace('ROOT\\', '')} <span class="manifest-lines">(${file.lines} lines)</span></div>`;
+    let h = `<div class="manifest-filepath">${file.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')} <span class="manifest-lines">(${file.lines} lines)</span></div>`;
     
-    // Logic for Relationships (Imports/Dependents)
-    const outboundDeps = []; // Files I import
-    const inboundDeps =[];  // Files that import me
+    const outboundDeps = [];
+    const inboundDeps =[];
 
+    // Bundle exactly formatted filepaths for UI Rendering
     relationLinks.forEach(link => {
         if (link.reasons.some(r => r.type === 'import')) {
             if (link.sourcePath === filePath) {
                 const targetFile = fileRegistry.find(f => f.id === link.targetPath);
-                if (targetFile) outboundDeps.push({ name: targetFile.name, domId: link.target });
+                if (targetFile) outboundDeps.push({ 
+                    name: targetFile.name, 
+                    path: targetFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/'),
+                    domId: link.target 
+                });
             } else if (link.targetPath === filePath) {
                 const sourceFile = fileRegistry.find(f => f.id === link.sourcePath);
-                if (sourceFile) inboundDeps.push({ name: sourceFile.name, domId: link.source });
+                if (sourceFile) inboundDeps.push({ 
+                    name: sourceFile.name, 
+                    path: sourceFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/'),
+                    domId: link.source 
+                });
             }
         }
     });
@@ -208,7 +207,7 @@ function refreshManifest() {
         
         let tags = "";
         if (isRelation) {
-            tags = items.map(rel => `<span class="data-tag relation-node" onclick="handleSelect('${rel.domId}')"><i data-lucide="file-text" size="10"></i> ${rel.name}</span>`).join('');
+            tags = items.map(rel => `<span class="data-tag relation-node" onclick="handleSelect('${rel.domId}')" title="${rel.path}"><i data-lucide="file-text" size="10"></i> ${rel.name} <span style="opacity: 0.6; margin-left: 4px; font-weight: normal; font-size: 0.9em;">(${rel.path})</span></span>`).join('');
         } else if (tagType === 'sockets') {
             tags = items.emits.map(e => `<span class="data-tag socket-emit">EMIT: ${e}</span>`).join('') +
                    items.ons.map(o => `<span class="data-tag socket-on">ON: ${o}</span>`).join('');
@@ -298,24 +297,23 @@ function copySystemReport() {
     const file = fileRegistry.find(f => f.id === filePath);
     if (!file) return;
 
-    // 1. Gather Relationship Data
-    const outboundDeps = [];
+    const outboundDeps =[];
     const inboundDeps =[];
 
+    // Directly bind the formatted file path into the generated copy list
     relationLinks.forEach(link => {
         if (link.reasons.some(r => r.type === 'import')) {
             if (link.sourcePath === filePath) {
                 const targetFile = fileRegistry.find(f => f.id === link.targetPath);
-                if (targetFile) outboundDeps.push(targetFile.name);
+                if (targetFile) outboundDeps.push(`${targetFile.name} (${targetFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')})`);
             } else if (link.targetPath === filePath) {
                 const sourceFile = fileRegistry.find(f => f.id === link.sourcePath);
-                if (sourceFile) inboundDeps.push(sourceFile.name);
+                if (sourceFile) inboundDeps.push(`${sourceFile.name} (${sourceFile.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')})`);
             }
         }
     });
 
-    // 2. Build the Text Report
-    let report = `FILE MANIFEST: ${file.id.replace('ROOT\\', '')} (${file.lines} lines)\n`;
+    let report = `FILE MANIFEST: ${file.id.replace(/^ROOT\\/, '').replace(/\\/g, '/')} (${file.lines} lines)\n`;
     report += `=========================================================\n\n`;
 
     if (outboundDeps.length > 0) {
@@ -345,7 +343,6 @@ function copySystemReport() {
         report += `Exports:\n${file.exports.map(e => `  - ${e}`).join('\n')}\n\n`;
     }
 
-    // 3. Write to Clipboard
     navigator.clipboard.writeText(report.trim()).then(() => {
         const b = document.getElementById("copy-btn");
         b.innerText = "COPIED";
