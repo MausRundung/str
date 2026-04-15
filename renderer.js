@@ -1,3 +1,4 @@
+// renderer.js
 /**
  * Component renderers
  */
@@ -11,15 +12,20 @@ function renderTree(node) {
             if (!items || (Array.isArray(items) && items.length === 0)) return '';
             let content = '';
             switch(type) {
-                case 'routes': content = items.map(r => `<span class="data-tag route"><span class="method">${r.method}</span> ${r.path}</span>`).join(''); break;
+                case 'routes': 
+                    content = items.map(r => `<span class="data-tag route"><span class="method">${r.method}</span> ${r.path}</span>`).join(''); 
+                    break;
                 case 'sockets': 
-                    content += items.emits.map(e => `<span class="data-tag socket-emit">EMIT: ${e}</span>`).join('');
-                    content += items.ons.map(o => `<span class="data-tag socket-on">ON: ${o}</span>`).join('');
+                    content += (items.emits || []).map(e => `<span class="data-tag socket-emit">EMIT: ${e}</span>`).join('');
+                    content += (items.ons || []).map(o => `<span class="data-tag socket-on">ON: ${o}</span>`).join('');
                     break;
                 case 'tables': content = items.map(t => `<span class="data-tag table">${t}</span>`).join(''); break;
                 case 'types': content = items.map(t => `<span class="data-tag type">${t}</span>`).join(''); break;
                 case 'exports': content = items.map(e => `<span class="data-tag export">${e}</span>`).join(''); break;
                 case 'imports': content = items.map(i => `<span class="data-tag import" title="${i}">${i.split('/').pop()}</span>`).join(''); break;
+                case 'relation': 
+                    content = items.map(rel => `<span class="data-tag relation-link" onclick="handleSelect('${rel.domId}')"><i data-lucide="file-text" size="10"></i> ${rel.name}</span>`).join(''); 
+                    break;
             }
             return `<div class="tag-container">${content}</div>`;
         }
@@ -27,10 +33,7 @@ function renderTree(node) {
         if (node.routes.length) detailItems.push(`<div class="card-data-row card-row-routes"><span class="data-label">Routes</span><div class="data-val">${toTags(node.routes, 'routes')}</div></div>`);
         if (node.sockets.emits.length || node.sockets.ons.length) detailItems.push(`<div class="card-data-row card-row-sockets"><span class="data-label">Sockets</span><div class="data-val">${toTags(node.sockets, 'sockets')}</div></div>`);
         if (node.tables.length) detailItems.push(`<div class="card-data-row card-row-tables"><span class="data-label">Tables</span><div class="data-val">${toTags(node.tables, 'tables')}</div></div>`);
-        if (node.types.length) detailItems.push(`<div class="card-data-row card-row-types"><span class="data-label">Types</span><div class="data-val">${toTags(node.types, 'types')}</div></div>`);
-        if (node.exports.length) detailItems.push(`<div class="card-data-row card-row-exports"><span class="data-label">Exports</span><div class="data-val">${toTags(node.exports, 'exports')}</div></div>`);
-        if (node.imports.length) detailItems.push(`<div class="card-data-row card-row-imports"><span class="data-label">Imports</span><div class="data-val">${toTags(node.imports, 'imports')}</div></div>`);
-
+        
         let classes = "file-card";
         if(node.routes.length) classes += " has-route";
         if(node.sockets.emits.length || node.sockets.ons.length) classes += " has-socket";

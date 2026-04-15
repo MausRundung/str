@@ -1,3 +1,4 @@
+// app.js
 /**
  * Global State & Orchestration
  */
@@ -30,7 +31,15 @@ function buildSystem() {
 
 function mapRelations() {
     const consolidatedLinks = new Map();
-    const nameMap = new Map(fileRegistry.map(f => [f.name.replace(/\.[^/.]+$/, ""), f]));
+    const nameMap = new Map();
+    
+    // Create a robust mapping of filename (without extension) to registry entry
+    fileRegistry.forEach(f => {
+        const baseName = f.name.replace(/\.[^/.]+$/, "");
+        nameMap.set(baseName, f);
+        // Also map by full ID for direct matches
+        nameMap.set(f.id, f);
+    });
 
     const addReason = (source, target, reason) => {
         const key = [source.id, target.id].sort().join('--');
@@ -47,7 +56,7 @@ function mapRelations() {
     };
 
     fileRegistry.forEach(src => {
-        // Map Imports
+        // Map Imports (Outbound)
         src.imports.forEach(imp => {
             const tgtName = imp.split('/').pop().replace(/\.[^/.]+$/, "");
             const tgt = nameMap.get(tgtName);
@@ -73,8 +82,7 @@ function handleFileCardClick(event) {
         event.preventDefault();
         const card = event.currentTarget;
         if (!projectBasePath) return alert("Base path unknown.");
-
-        const relativePath = card.dataset.path.substring(5).replace(/\\/g, '/'); 
+        const relativePath = card.dataset.path.replace('ROOT\\', '').replace(/\\/g, '/'); 
         window.location.href = `trae://file/${projectBasePath}/${relativePath}`;
     }
 }
@@ -88,7 +96,10 @@ function handleSelect(domId) {
 function refreshManifest() {
     if (!activeFileDomId) return;
     const domId = activeFileDomId;
-    const filePath = document.getElementById(domId).dataset.path;
+    const cardEl = document.getElementById(domId);
+    if (!cardEl) return;
+    
+    const filePath = cardEl.dataset.path;
     const file = fileRegistry.find(f => f.id === filePath);
     
     document.body.classList.add('focus-mode');
@@ -98,6 +109,7 @@ function refreshManifest() {
     const showImp = document.getElementById('opt-imports').checked;
     const showSoc = document.getElementById('opt-sockets').checked;
     
+    // Filter links connected to this file
     const connectedLinks = relationLinks.filter(link => {
         const hasSocket = link.reasons.some(r => r.type === 'socket');
         const hasImport = link.reasons.some(r => r.type === 'import');
@@ -111,6 +123,7 @@ function refreshManifest() {
         relatedDomIds.add(link.target);
     });
     
+    // Visual Isolation
     document.querySelectorAll('.file-card').forEach(el => {
         el.classList.remove('isolated-target', 'active-focus', 'hidden-node');
         if (el.id === domId) el.classList.add('isolated-target');
@@ -122,33 +135,57 @@ function refreshManifest() {
         f.classList.toggle('hidden-node', !f.querySelector('.file-card:not(.hidden-node)'));
     });
     
-    // Build HTML for Manifest
-    let h = `<div style="color:var(--text-main); font-weight:700; font-size:11px; margin-bottom:10px; border-left: 2px solid var(--accent); padding-left: 8px;">${file.id} <span style="font-weight:400; color:#444;">(${file.lines} L)</span></div>`;
+    // BUILD MANIFEST HTML
+    let h = `<div class="manifest-filepath">${file.id.replace('ROOT\\', '')} <span class="manifest-lines">(${file.lines} lines)</span></div>`;
     
-    // Add sections (Routes, Sockets, etc - helper logic)
-    const renderSection = (title, items, icon, tagType) => {
+    // Logic for Relationships (Imports/Dependents)
+    const outboundDeps = []; // Files I import
+    const inboundDeps = [];  // Files that import me
+
+    relationLinks.forEach(link => {
+        if (link.reasons.some(r => r.type === 'import')) {
+            if (link.sourcePath === filePath) {
+                const targetFile = fileRegistry.find(f => f.id === link.targetPath);
+                if (targetFile) outboundDeps.push({ name: targetFile.name, domId: link.target });
+            } else if (link.targetPath === filePath) {
+                const sourceFile = fileRegistry.find(f => f.id === link.sourcePath);
+                if (sourceFile) inboundDeps.push({ name: sourceFile.name, domId: link.source });
+            }
+        }
+    });
+
+    const renderSection = (title, items, icon, tagType, isRelation = false) => {
         if (!items || items.length === 0) return '';
         if (tagType === 'sockets' && items.emits.length === 0 && items.ons.length === 0) return '';
         
         let tags = "";
-        if (tagType === 'sockets') {
+        if (isRelation) {
+            tags = items.map(rel => `<span class="data-tag relation-node" onclick="handleSelect('${rel.domId}')"><i data-lucide="file-text" size="10"></i> ${rel.name}</span>`).join('');
+        } else if (tagType === 'sockets') {
             tags = items.emits.map(e => `<span class="data-tag socket-emit">EMIT: ${e}</span>`).join('') +
                    items.ons.map(o => `<span class="data-tag socket-on">ON: ${o}</span>`).join('');
         } else {
             tags = items.map(i => `<span class="data-tag ${tagType}">${tagType === 'routes' ? `[${i.method}] ${i.path}` : i}</span>`).join('');
         }
-        return `<div class="manifest-section"><div class="manifest-header"><i data-lucide="${icon}" size="10"></i> ${title}</div><div class="tag-container">${tags}</div></div>`;
+        return `
+            <div class="manifest-section">
+                <div class="manifest-header"><i data-lucide="${icon}" size="12"></i> ${title}</div>
+                <div class="tag-container">${tags}</div>
+            </div>`;
     };
 
+    h += renderSection("Dependencies (Imports)", outboundDeps, "box-select", 'relation', true);
+    h += renderSection("Reliant Components (Used By)", inboundDeps, "layers", 'relation', true);
     h += renderSection("API Routes", file.routes, "external-link", 'routes');
-    h += renderSection("Sockets", file.sockets, "radio-receiver", 'sockets');
-    h += renderSection("Tables", file.tables, "database", 'table');
+    h += renderSection("Socket Events", file.sockets, "radio-receiver", 'sockets');
+    h += renderSection("Database Tables", file.tables, "database", 'table');
     h += renderSection("Exports", file.exports, "package-export", 'export');
 
     document.getElementById('inspector-content').innerHTML = h;
     lucide.createIcons();
+    
     requestAnimationFrame(() => {
-        document.getElementById(domId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        cardEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         drawArcs();
     });
 }
@@ -198,7 +235,6 @@ function handleContentToggle(cls) {
 }
 
 function copySystemReport() {
-    // Logic for report generation...
     const b = document.getElementById("copy-btn");
     b.innerText = "COPIED";
     setTimeout(() => b.innerText = "COPY", 2000);

@@ -1,3 +1,4 @@
+// parser.js
 /**
  * Logic to parse the Str Analysis raw text format
  */
