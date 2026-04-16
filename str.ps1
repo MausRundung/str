@@ -54,7 +54,7 @@ function LogInline ($label, $labelColor, $value, $valueColor) {
 
 Log "`n=== ANALYZING ARCHITECTURE: $($rootPath) ===" "Cyan"
 
-# --- EXTENSIVE LANGUAGE-SPECIFIC REGEX PATTERNS ---
+# --- PATTERNS ---
 $langPatterns = @{
     js = @{
         routes = @(
@@ -117,50 +117,26 @@ $data = Get-ChildItem -Path $rootPath -Recurse -Attributes !Hidden | Where-Objec
         $content = Get-Content $item.FullName -Raw -ErrorAction SilentlyContinue
         if ($content) {
             $info.Lines = ($content -split '\r?\n').Count
-            
             $patterns = if ($lang) { $langPatterns[$lang] } else { @{} }
-            
             if (($showAll -or $Imports) -and $patterns.imports) { foreach($p in $patterns.imports) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.Imports += $v } } } }
             if (($showAll -or $Database) -and $patterns.db) { foreach($p in $patterns.db) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.DbTables += $v } } } }
             if ($patterns.contexts) { foreach($p in $patterns.contexts) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.Contexts += $v } } } }
             if ($showAll -or $Database) { foreach($p in $langPatterns.any.db) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.DbTables += $v } } } }
-
-            # EXPORTS & INTERFACES
             if (($showAll -or $Exports) -and $patterns.interfaces) { foreach($p in $patterns.interfaces) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.Interfaces += $v } } } }
             if (($showAll -or $Exports) -and $patterns.exports) { foreach($p in $patterns.exports) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.Exports += $v } } } }
-
-            # ROUTES (WITH HANDLERS)
             if (($showAll -or $Routes) -and $patterns.routes) {
                 foreach ($pat in $patterns.routes) {
                     foreach($match in [regex]::Matches($content, $pat)) {
                         $method  = if ($match.Groups['method'].Success) { $match.Groups['method'].Value.ToUpper() } else { "ANY" }
                         $route   = if ($match.Groups['route'].Success)  { $match.Groups['route'].Value } else { "/" }
                         $handler = if ($match.Groups['handler'].Success) { $match.Groups['handler'].Value } else { "" }
-                        
-                        if ($method -eq 'REQUEST') { $method = 'ANY' }
-                        if ($route -match "^https?://") { continue }
-                        if ($route -match "^/?io$") { continue }
-                        
-                        if ($method -match "^(GET|POST|PUT|DELETE|PATCH)$" -and $pat -match "export") {
-                            $route = "(Next.js Endpoint)"
-                        } elseif ($route -eq '' -or -not $route.StartsWith('/')) {
-                            $route = "/$route"
-                        }
-
-                        $routeStr = "[$method] $route"
-                        if ($handler) { $routeStr += " -> $handler" }
-
-                        $info.Routes += $routeStr
+                        if ($method -eq 'REQUEST') { $method = 'ANY' }; if ($route -match "^https?://") { continue }; if ($route -match "^/?io$") { continue }
+                        if ($method -match "^(GET|POST|PUT|DELETE|PATCH)$" -and $pat -match "export") { $route = "(Next.js Endpoint)" } elseif ($route -eq '' -or -not $route.StartsWith('/')) { $route = "/$route" }
+                        $routeStr = "[$method] $route"; if ($handler) { $routeStr += " -> $handler" }; $info.Routes += $routeStr
                     }
                 }
             }
-
-            # SOCKETS
-            if ($showAll -or $Sockets) {
-                foreach($match in [regex]::Matches($content, '\.(?<event>on|emit)\s*\(\s*[''"](?<name>[^''"]+)[''"]')) {
-                    $info.Sockets += "$($match.Groups['event'].Value): $($match.Groups['name'].Value)"
-                }
-            }
+            if ($showAll -or $Sockets) { foreach($match in [regex]::Matches($content, '\.(?<event>on|emit)\s*\(\s*[''"](?<name>[^''"]+)[''"]')) { $info.Sockets += "$($match.Groups['event'].Value): $($match.Groups['name'].Value)" } }
         }
     }
     return $info
@@ -169,136 +145,85 @@ $data = Get-ChildItem -Path $rootPath -Recurse -Attributes !Hidden | Where-Objec
 # --- VISUAL RENDERING ---
 if (-not $SummaryOnly) {
     foreach ($entry in $data) {
-        if ($entry.Type -eq "Directory") {
-            if ($showAll -or $Files) { Log "`n[DIR] $($entry.FullName.Replace($rootPath.Path, 'ROOT'))" "Blue" }
-        } else {
-            $hasRoutes = $entry.Routes.Count -gt 0; $hasSockets = $entry.Sockets.Count -gt 0
-            $hasDb = $entry.DbTables.Count -gt 0; $hasImports = $entry.Imports.Count -gt 0
-            $hasExports = $entry.Exports.Count -gt 0; $hasInterfaces = $entry.Interfaces.Count -gt 0
-
+        if ($entry.Type -eq "Directory") { if ($showAll -or $Files) { Log "`n[DIR] $($entry.FullName.Replace($rootPath.Path, 'ROOT'))" "Blue" } } else {
+            $hasRoutes = $entry.Routes.Count -gt 0; $hasSockets = $entry.Sockets.Count -gt 0; $hasDb = $entry.DbTables.Count -gt 0
+            $hasImports = $entry.Imports.Count -gt 0; $hasExports = $entry.Exports.Count -gt 0; $hasInterfaces = $entry.Interfaces.Count -gt 0
             if ($showAll -or $Files -or ($Routes -and $hasRoutes) -or ($Sockets -and $hasSockets) -or ($Database -and $hasDb) -or ($Imports -and $hasImports) -or ($Exports -and ($hasExports -or $hasInterfaces))) {
-                
                 Log "  FILE: $($entry.FullName.Replace($rootPath.Path, '')) ($($entry.Lines) lines)" "Gray"
-                
                 if (($showAll -or $Database) -and $hasDb) { LogInline "TABLES" "Yellow" (($entry.DbTables | Select-Object -Unique) -join ", ") "White" }
                 if (($showAll -or $Routes) -and $hasRoutes) { LogInline "ROUTES" "Green" (($entry.Routes | Select-Object -Unique) -join "  ") "White" }
                 if (($showAll -or $Sockets) -and $hasSockets) { LogInline "SOCKET" "Magenta" (($entry.Sockets | Select-Object -Unique) -join ", ") "White" }
                 if ($entry.Contexts) { LogInline "STATE " "Cyan" (($entry.Contexts | Select-Object -Unique) -join ", ") "White" }
-                
                 if (($showAll -or $Exports) -and $hasInterfaces) { LogInline "TYPES " "DarkMagenta" (($entry.Interfaces | Select-Object -Unique) -join ", ") "White" }
                 if (($showAll -or $Exports) -and $hasExports) { LogInline "EXPORTS" "DarkYellow" (($entry.Exports | Select-Object -Unique) -join ", ") "White" }
-                
-                if (($showAll -or $Imports) -and $hasImports) {
-                    $ext = $entry.Imports | Select-Object -Unique
-                    if ($ext) { LogInline "IMPORTS" "DarkGray" ($ext -join ", ") "DarkCyan" }
-                }
+                if (($showAll -or $Imports) -and $hasImports) { $ext = $entry.Imports | Select-Object -Unique; if ($ext) { LogInline "IMPORTS" "DarkGray" ($ext -join ", ") "DarkCyan" } }
             }
         }
     }
 }
 
-# --- FOOTER SUMMARY ---
 Log "`n============================================================" "Cyan"
 $allTables = ($data.DbTables | Where-Object {$_} | Select-Object -Unique | Sort-Object) -join ", "
 if($allTables) { LogInline "MODELS" "Yellow" $allTables "White" }
-
 $allContexts = ($data.Contexts | Where-Object {$_} | Select-Object -Unique | Sort-Object) -join ", "
 if($allContexts) { LogInline "STATE " "Cyan" $allContexts "White" }
-
 $totalLines = ($data | Measure-Object -Property Lines -Sum).Sum
 Log "Done. Scanned $(($data | Where-Object {$_.Type -eq 'File'}).Count) files. (Total Lines: $totalLines)" "Green"
 Log "============================================================`n" "Cyan"
 
-# --- AI EXPORT LOGIC ---
-if ($ExportFile) {
-    $finalOutput = '```text' + "`n" + ($OutputLog -join "`n") + "`n" + '```'
-    Set-Content -Path $ExportFile -Value $finalOutput
-    Write-Host "> EXPORT SUCCESS: Saved map to $ExportFile" -ForegroundColor Green
-    exit
-}
+# --- INTERRUPTIBLE SERVER ---
+$scriptDir = $PSScriptRoot; if ([string]::IsNullOrEmpty($scriptDir)) { $scriptDir = (Get-Location).Path }
+$port = 45000; $listener = New-Object System.Net.HttpListener; $serverStarted = $false
+while (-not $serverStarted -and $port -lt 45100) { try { $listener.Prefixes.Clear(); $listener.Prefixes.Add("http://localhost:$port/"); $listener.Start(); $serverStarted = $true } catch { $port++ } }
 
-# --- AUTO-VIEWER HTTP SERVER ---
-$scriptDir = $PSScriptRoot
-if ([string]::IsNullOrEmpty($scriptDir)) { $scriptDir = (Get-Location).Path }
+if (-not $listener.IsListening) { Write-Host "`n> Error: Could not bind to an available local port." -ForegroundColor Red; exit }
 
-$port = 45000
-$listener = New-Object System.Net.HttpListener
-$maxTries = 10
-
-while ($maxTries -gt 0) {
-    try {
-        $listener.Prefixes.Clear()
-        $listener.Prefixes.Add("http://localhost:$port/")
-        $listener.Start()
-        break
-    } catch {
-        $port++
-        $maxTries--
-    }
-}
-
-if (-not $listener.IsListening) {
-    Write-Host "`n> Error: Could not bind to a local port to start the viewer." -ForegroundColor Red
-    exit
-}
-
-$url = "http://localhost:$port/"
-Write-Host "`n> VIEWER SERVER READY: " -ForegroundColor Green -NoNewline
-Write-Host $url -ForegroundColor Cyan
-Write-Host "  (Press Ctrl+C to stop the server and return to terminal)`n" -ForegroundColor Gray
-
-# Open in Default Web Browser (because it's http:// instead of file://)
+$url = "http://localhost:$port/"; Write-Host "`n> VIEWER SERVER READY: " -ForegroundColor Green -NoNewline; Write-Host $url -ForegroundColor Cyan; Write-Host "  (Press Ctrl+C to stop)`n" -ForegroundColor Gray
 Start-Process $url
 
 try {
     while ($listener.IsListening) {
-        $context = $listener.GetContext()
-        $request = $context.Request
-        $response = $context.Response
-
-        # Prevent browser caching
-        $response.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
-
-        $reqPath = $request.Url.LocalPath
-        if ($reqPath -eq "/") { $reqPath = "/index.html" }
-
-        # Serve dynamic scan data directly from memory
-        if ($reqPath -eq "/str-data.js") {
-            $rawText = $OutputLog -join "`n"
-            $bt = [string][char]96
-            $safeText = $rawText.Replace('\', '\\').Replace($bt, "\$bt").Replace('$', '\$')
-            $content = "window.STR_AUTO_DATA = $bt$safeText$bt;"
-            $buffer = [System.Text.Encoding]::UTF8.GetBytes($content)
-            
-            $response.ContentType = "application/javascript"
-            $response.ContentLength64 = $buffer.Length
-            $response.OutputStream.Write($buffer, 0, $buffer.Length)
-        } 
-        # Serve static assets from the script's directory
-        else {
-            $filePath = Join-Path -Path $scriptDir -ChildPath $reqPath.TrimStart('/')
-            if (Test-Path $filePath -PathType Leaf) {
-                $ext =[System.IO.Path]::GetExtension($filePath)
-                switch ($ext) {
-                    ".html" { $response.ContentType = "text/html" }
-                    ".js"   { $response.ContentType = "application/javascript" }
-                    ".css"  { $response.ContentType = "text/css" }
-                    default { $response.ContentType = "application/octet-stream" }
-                }
-                $buffer =[System.IO.File]::ReadAllBytes($filePath)
-                $response.ContentLength64 = $buffer.Length
-                $response.OutputStream.Write($buffer, 0, $buffer.Length)
-            } else {
-                $response.StatusCode = 404
-            }
+        # 1. Start an async task to wait for a request
+        $contextAsync = $listener.BeginGetContext($null, $null)
+        
+        # 2. Loop while waiting for the request to complete
+        # Start-Sleep allows PowerShell to process the Ctrl+C signal
+        while (-not $contextAsync.IsCompleted) {
+            if (-not $listener.IsListening) { break }
+            Start-Sleep -Milliseconds 100
         }
-        $response.OutputStream.Close()
+
+        # 3. If we exited because a request arrived, process it
+        if ($contextAsync.IsCompleted) {
+            $context = $listener.EndGetContext($contextAsync)
+            $request = $context.Request; $response = $context.Response
+            $response.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+            $reqPath = $request.Url.LocalPath; if ($reqPath -eq "/") { $reqPath = "/index.html" }
+
+            if ($reqPath -eq "/str-data.js") {
+                $rawText = $OutputLog -join "`n"; $bt = [string][char]96
+                $safeText = $rawText.Replace('\', '\\').Replace($bt, "\$bt").Replace('$', '\$')
+                $content = "window.STR_AUTO_DATA = $bt$safeText$bt;"; $buffer = [System.Text.Encoding]::UTF8.GetBytes($content)
+                $response.ContentType = "application/javascript"; $response.ContentLength64 = $buffer.Length; $response.OutputStream.Write($buffer, 0, $buffer.Length)
+            } else {
+                $filePath = Join-Path -Path $scriptDir -ChildPath $reqPath.TrimStart('/')
+                if (Test-Path $filePath -PathType Leaf) {
+                    $ext =[System.IO.Path]::GetExtension($filePath)
+                    switch ($ext) { ".html" { $response.ContentType = "text/html" } ".js" { $response.ContentType = "application/javascript" } ".css" { $response.ContentType = "text/css" } default { $response.ContentType = "application/octet-stream" } }
+                    $buffer =[System.IO.File]::ReadAllBytes($filePath); $response.ContentLength64 = $buffer.Length; $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                } else { $response.StatusCode = 404 }
+            }
+            $response.OutputStream.Close()
+        }
     }
+} catch [System.Management.Automation.PipelineStoppedException] {
+    # Specifically catches Ctrl+C
 } catch {
-    # Suppress errors if the pipeline closes abruptly
+    Write-Host "`n> Server logic error: $_" -ForegroundColor Red
 } finally {
-    if ($listener -ne $null) {
-        $listener.Stop()
-        $listener.Close()
+    if ($null -ne $listener) { 
+        $listener.Stop(); 
+        $listener.Close(); 
+        Write-Host "`n> Server stopped and port released." -ForegroundColor Gray 
     }
 }
