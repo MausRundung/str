@@ -21,17 +21,16 @@
         <div class="sidebar-content">
             <div class="section-group">
                 <div class="section-title">Tree Card Content</div>
+                <label class="toggle-row"> Show Meta <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-meta')"><span class="slider"></span></label></label>
+                <label class="toggle-row"> Show Data/Models <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-data')"><span class="slider"></span></label></label>
                 <label class="toggle-row"> Show Routes <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-routes')"><span class="slider"></span></label></label>
-                <label class="toggle-row"> Show Sockets <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-sockets')"><span class="slider"></span></label></label>
-                <label class="toggle-row"> Show Tables <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-tables')"><span class="slider"></span></label></label>
-                <label class="toggle-row"> Show Types <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-types')"><span class="slider"></span></label></label>
                 <label class="toggle-row"> Show Exports <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-exports')"><span class="slider"></span></label></label>
                 <label class="toggle-row"> Show Imports <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-imports')"><span class="slider"></span></label></label>
+                <label class="toggle-row" style="color:var(--c-unused); font-weight: 600;"> Show Unused <label class="switch"><input type="checkbox" checked onchange="handleContentToggle('hide-card-unused')"><span class="slider"></span></label></label>
             </div>
             <div class="section-group">
                 <div class="section-title">Connection Layer</div>
                 <label class="toggle-row"> Map Imports <label class="switch"><input type="checkbox" id="opt-imports" checked onchange="refreshSelection()"><span class="slider"></span></label></label>
-                <label class="toggle-row"> Map Sockets <label class="switch"><input type="checkbox" id="opt-sockets" checked onchange="refreshSelection()"><span class="slider"></span></label></label>
             </div>
         </div>
     </aside>
@@ -42,7 +41,8 @@
             <input type="text" id="search-input" placeholder="Quick search..." oninput="filterSystem()">
             <div style="display:flex; gap:5px;">
                 <div class="chip" onclick="toggleChip(this, 'has-route')">ROUTES</div>
-                <div class="chip" onclick="toggleChip(this, 'has-socket')">SOCKETS</div>
+                <div class="chip" onclick="toggleChip(this, 'has-data')">DATA</div>
+                <div class="chip" onclick="toggleChip(this, 'has-unused')" style="border-color:var(--c-unused); color:var(--c-unused);">UNUSED</div>
             </div>
         </div>
     </div>
@@ -69,7 +69,6 @@
         </div>
     </div>
 
-    <!-- Logic Files -->
     <script src="str-data.js" onerror="this.onerror=null; this.remove();"></script>
     <script src="parser.js"></script>
     <script src="renderer.js"></script>

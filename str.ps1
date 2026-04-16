@@ -1,8 +1,8 @@
 $Path = "."
-$Files = $false; $Routes = $false; $Imports = $false; $Sockets = $false; $Database = $false; $Exports = $false; $SummaryOnly = $false
+$Files = $false; $Routes = $false; $Imports = $false; $Sockets = $false; $Database = $false; $Exports = $false; $SummaryOnly = $false; $CheckUnused = $false
 $ExportFile = $null
 
-# --- MANUAL ARGUMENT PARSING ---
+# --- ARGUMENT PARSING ---
 foreach ($arg in $args) {
     if ($arg -match '^-f$') { $Files = $true }
     elseif ($arg -match '^-r$') { $Routes = $true }
@@ -10,6 +10,7 @@ foreach ($arg in $args) {
     elseif ($arg -match '^-s$') { $Sockets = $true }
     elseif ($arg -match '^-d$') { $Database = $true }
     elseif ($arg -match '^-e$') { $Exports = $true }
+    elseif ($arg -match '^-u$') { $CheckUnused = $true }
     elseif ($arg -match '^-SummaryOnly$') { $SummaryOnly = $true }
     elseif ($arg -match '^help$') { $Path = "help" }
     elseif ($arg -eq '--') { $ExportFile = "filestructure.md" }
@@ -17,183 +18,252 @@ foreach ($arg in $args) {
     elseif (-not $arg.StartsWith('-')) { $Path = $arg }
 }
 
-# --- HELP MENU ---
 if ($Path -eq "help") {
-    Write-Host "`n=== POLYGLOT ARCHITECT HELP ===" -ForegroundColor Yellow
-    Write-Host "Usage: str [Path] [Flags] [--exportname]" -ForegroundColor Cyan
+    Write-Host "`n=== POLYGLOT ARCHITECT v4.1 (ULTRA-FAST DEEP SCAN) ===" -ForegroundColor Yellow
+    Write-Host "Usage: str [Path] [Flags][--exportname]" -ForegroundColor Cyan
     Write-Host "`nFLAGS:" -ForegroundColor Gray
-    Write-Host "  -f    Files: Shows all file names in the tree."
-    Write-Host "  -r    Routes: Extracts API endpoints AND Handler functions."
-    Write-Host "  -i    Imports: Lists ALL dependencies (External & Local)."
-    Write-Host "  -s    Sockets: Shows Real-time events."
-    Write-Host "  -d    Database: Shows Models (SQL, Prisma, etc)."
-    Write-Host "  -e    Exports: Shows Interfaces, Types, Classes, and Exported Constants."
-    Write-Host "  -SummaryOnly  Shows only the final system map."
-    Write-Host "`nEXPORTING FOR AI: --some-name (creates some-name.md)"
+    Write-Host "  -f    Files (Show all files)"
+    Write-Host "  -r    Routes (API Endpoints & File-based routing)"
+    Write-Host "  -i    Imports (Deep module extraction & destructured mapping)"
+    Write-Host "  -e    Exports (Functions, Classes, Structs, Hooks)"
+    Write-Host "  -d    Database (Models, Schemas, Services, ORMs)"
+    Write-Host "  -u    Unused (Cross-references imports to find unused variables!)"
     exit
 }
 
-# --- INITIALIZATION ---
-try { $rootPath = Resolve-Path $Path } catch { Write-Error "Invalid Path"; exit }
+try { $rootPath = (Resolve-Path $Path).Path } catch { Write-Error "Invalid Path"; exit }
 
-$dirRegex = '(?i)[\\/](node_modules|\.git|\.vscode|\.idea|\.next|dist|build|out|target|bin|obj|venv|\.venv|__pycache__|uploads)([\\/]|$)'
-$fileRegex = '(?i)(\.sqlite|\.db|\.exe|package-lock\.json|yarn\.lock|Cargo\.lock)$'
+# Strict Exclusions
+$dirRegex = '(?i)[\\/](\.git|node_modules|\.next|\.nuxt|\.svelte-kit|dist|build|vendor|venv|\.venv|__pycache__|target|obj|bin|coverage|\.vs|out)([\\/]|$)'
+$fileRegex = '(?i)(\.exe|\.dll|\.pyc|\.png|\.jpg|\.jpeg|\.gif|\.ico|\.svg|\.woff|\.woff2|\.ttf|\.sqlite|\.db|\.pdf|\.zip|\.tar|\.gz|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|\.min\.js|\.map|\.stl|\.fbx)$'
 
-$showAll = -not ($Files -or $Routes -or $Imports -or $Sockets -or $Database -or $Exports -or $SummaryOnly)
-$OutputLog = New-Object System.Collections.Generic.List[string]
+$showAll = -not ($Files -or $Routes -or $Imports -or $Sockets -or $Database -or $Exports -or $SummaryOnly -or $CheckUnused)
+$OutputLog = [System.Collections.Generic.List[string]]::new()
 
-function Log ($text, $color="Gray") {
-    Write-Host $text -ForegroundColor $color
-    $OutputLog.Add($text)
-}
+function Log ($text, $color="Gray") { Write-Host $text -ForegroundColor $color; $OutputLog.Add($text) }
 function LogInline ($label, $labelColor, $value, $valueColor) {
-    Write-Host "    [$label]  " -NoNewline -ForegroundColor $labelColor
+    Write-Host "[$label] " -NoNewline -ForegroundColor $labelColor
     Write-Host $value -ForegroundColor $valueColor
-    $OutputLog.Add("    [$label]  $value")
+    $OutputLog.Add("    [$label] $value")
 }
 
-Log "`n=== ANALYZING ARCHITECTURE: $($rootPath) ===" "Cyan"
+Log "`n=== ADVANCED ARCHITECTURE SCAN: $($rootPath) ===" "Cyan"
+if ($CheckUnused) { Log "[-] Unused Import Detection ENABLED" "Yellow" }
 
-# --- PATTERNS ---
-$langPatterns = @{
-    js = @{
-        routes = @(
-            '(?i)\b(?<var>[a-zA-Z0-9_]+)\.(?<method>get|post|put|delete|patch|use|all)\s*\(\s*[''"](?<route>\/[^''"]*|\*[^''"]*)[''"](?:[^()]*?,\s*(?<handler>[a-zA-Z0-9_.]+)\s*\))?',
-            '(?m)^[ \t]*export\s+(?:async\s+)?function\s+(?<method>GET|POST|PUT|DELETE|PATCH)\b'
-        )
-        imports = @(
-            '(?ms)\bimport\s+[^''"]*?[''"](?<val>[^''"]+)[''"]',
-            '(?ms)\bexport\s+[^''"]*?from\s+[''"](?<val>[^''"]+)[''"]',
-            '(?ms)\b(?:await\s+)?import\([''"](?<val>[^''"]+)[''"]\)',
-            '\brequire\([''"](?<val>[^''"]+)[''"]\)'
-        )
-        contexts = @(
-            '\buseContext\((?<val>\w+)\)',
-            '\buse(?<val>\w+(?:Context|Store))\(\)',
-            '(?<!\.)\binject\([''"](?<val>[^''"]+)[''"]\)',
-            '(?<!\.)\bgetContext\([''"](?!(?:2d|webgl))(?<val>[^''"]+)[''"]\)'
-        )
-        db = @( '\bmodel\s+(?<val>\w+)\s*\{' )
-        interfaces = @(
-            '(?ms)\b(?:export\s+)?(?:interface|type)\s+(?<val>[a-zA-Z0-9_]+)'
-        )
-        exports = @(
-            '(?m)\bexport\s+(?:default\s+)?(?:async\s+)?(?:abstract\s+)?(?:const|let|var|function|class|enum)\s+(?<val>[a-zA-Z0-9_]+)',
-            '(?m)\bexport\s+default\s+(?!(?:async|abstract|const|let|var|function|class|enum)\b)(?<val>[a-zA-Z0-9_]+)'
-        )
-    }
-    py = @{
-        routes = @('@(?<var>[a-zA-Z0-9_]+)\.(?<method>get|post|put|delete|patch|route)\s*\(\s*[''"](?<route>[^''"]+)[''"]', '\bpath\(\s*[''"](?<route>[^''"]*)[''"](?:[^)]*,\s*(?<handler>[a-zA-Z0-9_.]+)\s*)?\)')
-        imports = @('(?m)^[ \t]*from\s+(?<val>[a-zA-Z0-9_.]+)\s+import', '(?m)^[ \t]*import\s+(?<val>[a-zA-Z0-9_.]+)(?:\s+as\s+[a-zA-Z0-9_]+)?\s*$')
-        db = @('(?m)^[ \t]*class\s+(?<val>\w+)\(Base\)', '(?m)^[ \t]*class\s+(?<val>\w+)\(models\.Model\)')
-    }
-    cs = @{
-        routes = @('\[Http(?<method>Get|Post|Put|Delete|Patch)(?:\s*\(\s*[''"](?<route>[^''"]*)[''"]\s*\))?\]')
-        imports = @('(?m)^[ \t]*(?:using|namespace)\s+(?<val>[a-zA-Z0-9_.]+);')
-        db = @('DbSet<(?<val>\w+)>')
-    }
-    any = @{
-        db = @('(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?<val>\w+)')
-    }
+# --- 1. ULTRA-FAST DIRECTORY TRAVERSAL ---
+$filesToProcess =[System.Collections.Generic.List[string]]::new()
+$dirsToProcess =[System.Collections.Generic.Queue[string]]::new()
+$dirsToProcess.Enqueue($rootPath)
+
+while ($dirsToProcess.Count -gt 0) {
+    $currentDir = $dirsToProcess.Dequeue()
+    try {
+        foreach ($sub in [System.IO.Directory]::GetDirectories($currentDir)) {
+            if ($sub -notmatch $dirRegex) { $dirsToProcess.Enqueue($sub) }
+        }
+        foreach ($file in [System.IO.Directory]::GetFiles($currentDir)) {
+            if ($file -notmatch $fileRegex) { $filesToProcess.Add($file) }
+        }
+    } catch { }
 }
 
-# --- DATA COLLECTION ---
-$data = Get-ChildItem -Path $rootPath -Recurse -Attributes !Hidden | Where-Object { 
-    $_.FullName -notmatch $dirRegex -and $_.FullName -notmatch $fileRegex
-} | ForEach-Object {
-    $item = $_
-    $info =[PSCustomObject]@{
-        FullName = $item.FullName; Type = if ($item.PSIsContainer) { "Directory" } else { "File" }
-        Lines = 0; Imports = @(); Routes = @(); Sockets = @(); DbTables = @(); Contexts = @(); Interfaces = @(); Exports = @()
+# --- 2. DEEP PARSING LOGIC ---
+$data =[System.Collections.Generic.List[PSCustomObject]]::new()
+
+foreach ($filePath in $filesToProcess) {
+    $fileInfo = [System.IO.FileInfo]::new($filePath)
+    if ($fileInfo.Length -gt 1048576) { continue } # SKIP FILES > 1MB
+    
+    $ext = $fileInfo.Extension.ToLower()
+    $fileName = $fileInfo.Name.ToLower()
+    $relPath = $filePath.Replace($rootPath, "").Replace("\", "/")
+    
+    $info = [PSCustomObject]@{
+        Name = $fileInfo.Name; FullName = $filePath; RelPath = $relPath; Lines = 0
+        Imports =[System.Collections.Generic.HashSet[string]]::new()
+        Routes =[System.Collections.Generic.HashSet[string]]::new()
+        Db =[System.Collections.Generic.HashSet[string]]::new()
+        Exports =[System.Collections.Generic.HashSet[string]]::new()
+        Meta =[System.Collections.Generic.HashSet[string]]::new()
+        Unused =[System.Collections.Generic.HashSet[string]]::new()
     }
 
-    $ext = $item.Extension
-    if ($ext -and $info.Type -eq "File") {
-        $lang = ""
-        if ($ext -in @(".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte")) { $lang = "js" }
-        elseif ($ext -eq ".py") { $lang = "py" }
-        elseif ($ext -eq ".cs") { $lang = "cs" }
-        
-        $content = Get-Content $item.FullName -Raw -ErrorAction SilentlyContinue
-        if ($content) {
-            $info.Lines = ($content -split '\r?\n').Count
-            $patterns = if ($lang) { $langPatterns[$lang] } else { @{} }
-            if (($showAll -or $Imports) -and $patterns.imports) { foreach($p in $patterns.imports) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.Imports += $v } } } }
-            if (($showAll -or $Database) -and $patterns.db) { foreach($p in $patterns.db) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.DbTables += $v } } } }
-            if ($patterns.contexts) { foreach($p in $patterns.contexts) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.Contexts += $v } } } }
-            if ($showAll -or $Database) { foreach($p in $langPatterns.any.db) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.DbTables += $v } } } }
-            if (($showAll -or $Exports) -and $patterns.interfaces) { foreach($p in $patterns.interfaces) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.Interfaces += $v } } } }
-            if (($showAll -or $Exports) -and $patterns.exports) { foreach($p in $patterns.exports) { foreach($m in [regex]::Matches($content, $p)) { $v = $m.Groups['val'].Value.Trim(); if ($v) { $info.Exports += $v } } } }
-            if (($showAll -or $Routes) -and $patterns.routes) {
-                foreach ($pat in $patterns.routes) {
-                    foreach($match in [regex]::Matches($content, $pat)) {
-                        $method  = if ($match.Groups['method'].Success) { $match.Groups['method'].Value.ToUpper() } else { "ANY" }
-                        $route   = if ($match.Groups['route'].Success)  { $match.Groups['route'].Value } else { "/" }
-                        $handler = if ($match.Groups['handler'].Success) { $match.Groups['handler'].Value } else { "" }
-                        if ($method -eq 'REQUEST') { $method = 'ANY' }; if ($route -match "^https?://") { continue }; if ($route -match "^/?io$") { continue }
-                        if ($method -match "^(GET|POST|PUT|DELETE|PATCH)$" -and $pat -match "export") { $route = "(Next.js Endpoint)" } elseif ($route -eq '' -or -not $route.StartsWith('/')) { $route = "/$route" }
-                        $routeStr = "[$method] $route"; if ($handler) { $routeStr += " -> $handler" }; $info.Routes += $routeStr
+    $content = Get-Content $filePath -Raw -ErrorAction SilentlyContinue
+    if (-not $content) { continue }
+    $info.Lines = ($content -split '\r?\n').Count
+
+    # -- FILE-BASED ROUTING --
+    if ($relPath -match '/(app|pages|routes)/.*\.(tsx|jsx|js|ts|svelte|vue)$' -and $fileName -match '^(page|route|\+page|\+server|\+layout|layout|index)\.') {
+        $info.Routes.Add("[File Route] $relPath") | Out-Null
+    }
+
+    # -- STRUCTURED DATA (JSON / YAML) --
+    if ($ext -eq ".json") {
+        try {
+            $json = $content | ConvertFrom-Json
+            if ($fileName -eq "package.json") {
+                if ($json.dependencies) { $json.dependencies.psobject.properties.name | ForEach-Object { $info.Imports.Add("npm:$_") | Out-Null } }
+                if ($json.devDependencies) { $json.devDependencies.psobject.properties.name | ForEach-Object { $info.Imports.Add("npm-dev:$_") | Out-Null } }
+                $info.Meta.Add("Version: $($json.version)") | Out-Null
+            }
+        } catch {}
+    }
+    elseif ($ext -match "ya?ml") {
+        foreach ($m in [regex]::Matches($content, 'image:\s*(?<val>[^\s]+)')) { $info.Imports.Add("Docker:$($m.Groups['val'].Value)") | Out-Null }
+        foreach ($m in [regex]::Matches($content, '(?m)^[ \t]*(?<val>[a-zA-Z0-9_-]+):[ \t]*\n[ \t]+image:')) { $info.Db.Add("Service:$($m.Groups['val'].Value)") | Out-Null }
+    }
+
+    # -- CODE PARSING (REGEX) --
+    $clean = $content -replace '(?m)//.*$', '' -replace '(?m)#.*$', ''
+
+    switch -Regex ($ext) {
+        '\.(js|ts|tsx|jsx|vue|svelte)$' {
+            foreach ($m in [regex]::Matches($clean, '(?ms)^[ \t]*import\s+(?<imports>[^''";]+?)\s+from\s+[''"](?<module>[^''"]+)[''"]')) {
+                $module = $m.Groups['module'].Value
+                $impBlock = $m.Groups['imports'].Value -replace '[\{\}\s]', ' '
+                foreach ($imp in ($impBlock -split ',' | Where-Object { $_.Trim() })) {
+                    $token = ($imp.Trim() -split '\s+as\s+')[-1].Trim() 
+                    if ($token -eq '*') { $info.Imports.Add("$module (*)") | Out-Null; continue }
+                    
+                    $info.Imports.Add("$module ($token)") | Out-Null
+                    if ($CheckUnused) {
+                        $safeToken = [regex]::Escape($token)
+                        $restOfFile = $clean.Replace($m.Value, "")
+                        if (-not[regex]::IsMatch($restOfFile, "\b$safeToken\b")) { $info.Unused.Add($token) | Out-Null }
                     }
                 }
             }
-            if ($showAll -or $Sockets) { foreach($match in [regex]::Matches($content, '\.(?<event>on|emit)\s*\(\s*[''"](?<name>[^''"]+)[''"]')) { $info.Sockets += "$($match.Groups['event'].Value): $($match.Groups['name'].Value)" } }
+            foreach ($m in [regex]::Matches($clean, '(?i)(?:const|let|var)\s+(?<imports>\{[^}]+\}|[a-zA-Z0-9_]+)\s*=\s*require\([''"](?<module>[^''"]+)[''"]\)')) {
+                $module = $m.Groups['module'].Value
+                $impBlock = $m.Groups['imports'].Value -replace '[\{\}\s]', ' '
+                foreach ($imp in ($impBlock -split ',' | Where-Object { $_.Trim() })) { $info.Imports.Add("$module ($($imp.Trim()))") | Out-Null }
+            }
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*export\s+(?:default\s+)?(?:async\s+)?(?:const|let|var|function|class|type|interface|enum)\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add($m.Groups['val'].Value) | Out-Null }
+            
+            # BUG FIX: Removed `(?i)` case-insensitivity to stop "user", "username", "userId" from registering as hooks!
+            foreach ($m in [regex]::Matches($clean, '\buse[A-Z][a-zA-Z0-9_]*\b')) { $info.Exports.Add("[Hook] $($m.Value)") | Out-Null }
+            
+            foreach ($m in [regex]::Matches($clean, '(?i)(?:app|router|server|fastify)\.(?<method>get|post|put|delete|patch|all)\([''"](?<route>[^''"]+)[''"]')) { $info.Routes.Add("[$($m.Groups['method'].Value.ToUpper())] $($m.Groups['route'].Value)") | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '\b(?:model|enum|type)\s+(?<val>[A-Z]\w+)\s*\{')) { $info.Db.Add("Model: $($m.Groups['val'].Value)") | Out-Null }
         }
-    }
-    return $info
-}
+        
+        '\.(py|pyi)$' {
+            foreach ($m in [regex]::Matches($clean, '(?ms)^[ \t]*from\s+(?<module>[a-zA-Z0-9_.]+)\s+import\s+(?:\((?<named>[^)]+)\)|(?<inline>[^\r\n]+))')) {
+                $module = $m.Groups['module'].Value
+                $impBlock = if ($m.Groups['named'].Success) { $m.Groups['named'].Value } else { $m.Groups['inline'].Value }
+                foreach ($imp in ($impBlock -split ',' | Where-Object { $_.Trim() })) {
+                    $token = ($imp.Trim() -split '\s+as\s+')[-1].Trim()
+                    $info.Imports.Add("$module ($token)") | Out-Null
+                    if ($CheckUnused) {
+                        $safeToken =[regex]::Escape($token)
+                        $restOfFile = $clean.Replace($m.Value, "")
+                        if (-not [regex]::IsMatch($restOfFile, "\b$safeToken\b")) { $info.Unused.Add($token) | Out-Null }
+                    }
+                }
+            }
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*import\s+(?<val>[a-zA-Z0-9_., ]+)')) {
+                $m.Groups['val'].Value -split ',' | ForEach-Object { $info.Imports.Add($_.Trim()) | Out-Null }
+            }
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*(?:async\s+)?def\s+(?<val>[a-zA-Z0-9_]+)\(')) { $info.Exports.Add("def $($m.Groups['val'].Value)") | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*class\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add("class $($m.Groups['val'].Value)") | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '@(?:app|router|blueprint)\.(?<method>get|post|put|delete|route)\([''"](?<route>[^''"]+)[''"]')) { $info.Routes.Add("[$($m.Groups['method'].Value.ToUpper())] $($m.Groups['route'].Value)") | Out-Null }
+        }
+        
+        '\.(cs)$' {
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*using\s+(?<val>[a-zA-Z0-9_.]+);')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '(?m)public\s+(?:static\s+)?(?:class|struct|interface|record|enum)\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add($m.Groups['val'].Value) | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '\[Http(?<method>Get|Post|Put|Delete|Patch)(?:\([''"](?<route>[^''"]*)[''"]\))?\]')) { $info.Routes.Add("[$($m.Groups['method'].Value.ToUpper())] $($m.Groups['route'].Value)") | Out-Null }
+            foreach ($m in [regex]::Matches($clean, 'DbSet<(?<val>\w+)>')) { $info.Db.Add("DbSet: $($m.Groups['val'].Value)") | Out-Null }
+        }
 
-# --- VISUAL RENDERING ---
-if (-not $SummaryOnly) {
-    foreach ($entry in $data) {
-        if ($entry.Type -eq "Directory") { if ($showAll -or $Files) { Log "`n[DIR] $($entry.FullName.Replace($rootPath.Path, 'ROOT'))" "Blue" } } else {
-            $hasRoutes = $entry.Routes.Count -gt 0; $hasSockets = $entry.Sockets.Count -gt 0; $hasDb = $entry.DbTables.Count -gt 0
-            $hasImports = $entry.Imports.Count -gt 0; $hasExports = $entry.Exports.Count -gt 0; $hasInterfaces = $entry.Interfaces.Count -gt 0
-            if ($showAll -or $Files -or ($Routes -and $hasRoutes) -or ($Sockets -and $hasSockets) -or ($Database -and $hasDb) -or ($Imports -and $hasImports) -or ($Exports -and ($hasExports -or $hasInterfaces))) {
-                Log "  FILE: $($entry.FullName.Replace($rootPath.Path, '')) ($($entry.Lines) lines)" "Gray"
-                if (($showAll -or $Database) -and $hasDb) { LogInline "TABLES" "Yellow" (($entry.DbTables | Select-Object -Unique) -join ", ") "White" }
-                if (($showAll -or $Routes) -and $hasRoutes) { LogInline "ROUTES" "Green" (($entry.Routes | Select-Object -Unique) -join "  ") "White" }
-                if (($showAll -or $Sockets) -and $hasSockets) { LogInline "SOCKET" "Magenta" (($entry.Sockets | Select-Object -Unique) -join ", ") "White" }
-                if ($entry.Contexts) { LogInline "STATE " "Cyan" (($entry.Contexts | Select-Object -Unique) -join ", ") "White" }
-                if (($showAll -or $Exports) -and $hasInterfaces) { LogInline "TYPES " "DarkMagenta" (($entry.Interfaces | Select-Object -Unique) -join ", ") "White" }
-                if (($showAll -or $Exports) -and $hasExports) { LogInline "EXPORTS" "DarkYellow" (($entry.Exports | Select-Object -Unique) -join ", ") "White" }
-                if (($showAll -or $Imports) -and $hasImports) { $ext = $entry.Imports | Select-Object -Unique; if ($ext) { LogInline "IMPORTS" "DarkGray" ($ext -join ", ") "DarkCyan" } }
+        '\.(go)$' {
+            foreach ($m in [regex]::Matches($clean, '(?ms)import\s*\((?<imports>[^)]+)\)')) { 
+                foreach ($imp in ($m.Groups['imports'].Value -split '\n' | Where-Object { $_.Trim() })) { $info.Imports.Add($imp.Trim() -replace '"', '') | Out-Null }
+            }
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*import\s+[''"](?<val>[^''"]+)[''"]')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '(?m)^func\s+(?<val>[A-Z][a-zA-Z0-9_]*)\b')) { $info.Exports.Add("func $($m.Groups['val'].Value)") | Out-Null }
+            foreach ($m in [regex]::Matches($clean, 'http\.HandleFunc\([''"](?<route>[^''"]+)[''"]|\.(?<method>GET|POST|PUT|DELETE|PATCH)\([''"](?<route>[^''"]+)[''"]')) { 
+                $method = if ($m.Groups['method'].Success) { $m.Groups['method'].Value } else { "ANY" }
+                $info.Routes.Add("[$method] $($m.Groups['route'].Value)") | Out-Null 
             }
         }
+
+        '\.(rs)$' {
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*use\s+(?<val>[a-zA-Z0-9_:]+)(?:;|\{)')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*pub\s+(?:fn|struct|enum|trait)\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add($m.Groups['val'].Value) | Out-Null }
+        }
+
+        '\.(php)$' {
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*use\s+(?<val>[a-zA-Z0-9_\\]+);')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*(?:public\s+)?(?:class|function)\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add($m.Groups['val'].Value) | Out-Null }
+            foreach ($m in [regex]::Matches($clean, 'Route::(?<method>get|post|put|delete|any|match)\([''"](?<route>[^''"]+)[''"]')) { $info.Routes.Add("[$($m.Groups['method'].Value.ToUpper())] $($m.Groups['route'].Value)") | Out-Null }
+        }
+
+        '\.(ps1|psm1)$' {
+            foreach ($m in [regex]::Matches($clean, '(?m)^\s*(?:\.|using\s+module|Import-Module)\s+(?<val>[^\s\r\n;]+)')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '(?i)(?m)^function\s+(?<val>[a-zA-Z0-9_-]+)')) { $info.Exports.Add("func $($m.Groups['val'].Value)") | Out-Null }
+            foreach ($m in [regex]::Matches($clean, '(?i)Invoke-(RestMethod|WebRequest).*?(?:-Uri|-Url)\s+[''"]?(?<val>http[^''"\s]+)')) { $info.Routes.Add("[API CALL] $($m.Groups['val'].Value)") | Out-Null }
+        }
+    }
+    
+    $data.Add($info)
+}
+
+# --- 3. VISUAL RENDERING ---
+foreach ($entry in $data) {
+    $hasAny = ($entry.Imports.Count + $entry.Routes.Count + $entry.Db.Count + $entry.Exports.Count + $entry.Unused.Count) -gt 0
+    if ($showAll -or $Files -or $hasAny) {
+        Log "`nFILE: $($entry.RelPath) ($($entry.Lines) lines)" "White"
+        
+        if ($entry.Meta.Count -gt 0) { LogInline "META   " "Cyan" ($entry.Meta -join ", ") "Gray" }
+        if ($entry.Db.Count -gt 0) { LogInline "DATA   " "Yellow" ($entry.Db -join ", ") "Gray" }
+        if ($entry.Routes.Count -gt 0) { LogInline "ROUTES " "Green" ($entry.Routes -join " | ") "Gray" }
+        
+        if ($entry.Exports.Count -gt 0) { 
+            # Sort so that Hooks are naturally grouped at the end
+            $expArr = $entry.Exports | Sort-Object | Select-Object -First 15
+            $suffix = if ($entry.Exports.Count -gt 15) { " (+$(($entry.Exports.Count - 15)) more)" } else { "" }
+            LogInline "EXPORTS" "DarkYellow" (($expArr -join ", ") + $suffix) "Gray" 
+        }
+        
+        if ($entry.Imports.Count -gt 0) { 
+            $impArr = $entry.Imports | Sort-Object | Select-Object -First 15
+            $suffix = if ($entry.Imports.Count -gt 15) { " (+$(($entry.Imports.Count - 15)) more)" } else { "" }
+            LogInline "IMPORTS" "DarkGray" (($impArr -join ", ") + $suffix) "DarkCyan" 
+        }
+        
+        if ($CheckUnused -and $entry.Unused.Count -gt 0) {
+            LogInline "UNUSED " "Red" ($entry.Unused -join ", ") "DarkRed"
+        }
     }
 }
 
-Log "`n============================================================" "Cyan"
-$allTables = ($data.DbTables | Where-Object {$_} | Select-Object -Unique | Sort-Object) -join ", "
-if($allTables) { LogInline "MODELS" "Yellow" $allTables "White" }
-$allContexts = ($data.Contexts | Where-Object {$_} | Select-Object -Unique | Sort-Object) -join ", "
-if($allContexts) { LogInline "STATE " "Cyan" $allContexts "White" }
+# BUG FIX: String Formatting corrected to avoid argument injection parsing errors in PowerShell
+Log "`n$('-' * 70)" "Cyan"
 $totalLines = ($data | Measure-Object -Property Lines -Sum).Sum
-Log "Done. Scanned $(($data | Where-Object {$_.Type -eq 'File'}).Count) files. (Total Lines: $totalLines)" "Green"
-Log "============================================================`n" "Cyan"
+$fileCount = $data.Count
+Log "Deep Scan Complete" "Green"
+Log "Files Analyzed: $fileCount | Total Lines of Code: $totalLines" "White"
+Log "$('-' * 70)`n" "Cyan"
 
-# --- INTERRUPTIBLE SERVER ---
+# --- INTERRUPTIBLE VIEWER SERVER ---
 $scriptDir = $PSScriptRoot; if ([string]::IsNullOrEmpty($scriptDir)) { $scriptDir = (Get-Location).Path }
 $port = 45000; $listener = New-Object System.Net.HttpListener; $serverStarted = $false
 while (-not $serverStarted -and $port -lt 45100) { try { $listener.Prefixes.Clear(); $listener.Prefixes.Add("http://localhost:$port/"); $listener.Start(); $serverStarted = $true } catch { $port++ } }
 
-if (-not $listener.IsListening) { Write-Host "`n> Error: Could not bind to an available local port." -ForegroundColor Red; exit }
+if (-not $listener.IsListening) { Write-Host "`n> Error: Could not bind to local port." -ForegroundColor Red; exit }
 
 $url = "http://localhost:$port/"; Write-Host "`n> VIEWER SERVER READY: " -ForegroundColor Green -NoNewline; Write-Host $url -ForegroundColor Cyan; Write-Host "  (Press Ctrl+C to stop)`n" -ForegroundColor Gray
 Start-Process $url
 
 try {
     while ($listener.IsListening) {
-        # 1. Start an async task to wait for a request
         $contextAsync = $listener.BeginGetContext($null, $null)
-        
-        # 2. Loop while waiting for the request to complete
-        # Start-Sleep allows PowerShell to process the Ctrl+C signal
         while (-not $contextAsync.IsCompleted) {
             if (-not $listener.IsListening) { break }
             Start-Sleep -Milliseconds 100
         }
 
-        # 3. If we exited because a request arrived, process it
         if ($contextAsync.IsCompleted) {
             $context = $listener.EndGetContext($contextAsync)
             $request = $context.Request; $response = $context.Response
@@ -201,9 +271,9 @@ try {
             $reqPath = $request.Url.LocalPath; if ($reqPath -eq "/") { $reqPath = "/index.html" }
 
             if ($reqPath -eq "/str-data.js") {
-                $rawText = $OutputLog -join "`n"; $bt = [string][char]96
+                $rawText = $OutputLog -join "`n"; $bt =[string][char]96
                 $safeText = $rawText.Replace('\', '\\').Replace($bt, "\$bt").Replace('$', '\$')
-                $content = "window.STR_AUTO_DATA = $bt$safeText$bt;"; $buffer = [System.Text.Encoding]::UTF8.GetBytes($content)
+                $content = "window.STR_AUTO_DATA = $bt$safeText$bt;"; $buffer =[System.Text.Encoding]::UTF8.GetBytes($content)
                 $response.ContentType = "application/javascript"; $response.ContentLength64 = $buffer.Length; $response.OutputStream.Write($buffer, 0, $buffer.Length)
             } else {
                 $filePath = Join-Path -Path $scriptDir -ChildPath $reqPath.TrimStart('/')
@@ -217,13 +287,8 @@ try {
         }
     }
 } catch [System.Management.Automation.PipelineStoppedException] {
-    # Specifically catches Ctrl+C
 } catch {
     Write-Host "`n> Server logic error: $_" -ForegroundColor Red
 } finally {
-    if ($null -ne $listener) { 
-        $listener.Stop(); 
-        $listener.Close(); 
-        Write-Host "`n> Server stopped and port released." -ForegroundColor Gray 
-    }
+    if ($null -ne $listener) { $listener.Stop(); $listener.Close(); Write-Host "`n> Server stopped." -ForegroundColor Gray }
 }
