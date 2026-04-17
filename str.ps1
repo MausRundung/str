@@ -19,11 +19,11 @@ foreach ($arg in $args) {
 }
 
 if ($Path -eq "help") {
-    Write-Host "`n=== POLYGLOT ARCHITECT v4.1 (ULTRA-FAST DEEP SCAN) ===" -ForegroundColor Yellow
+    Write-Host "`n=== POLYGLOT ARCHITECT v4.2 (ULTRA-FAST DEEP SCAN) ===" -ForegroundColor Yellow
     Write-Host "Usage: str [Path] [Flags][--exportname]" -ForegroundColor Cyan
     Write-Host "`nFLAGS:" -ForegroundColor Gray
     Write-Host "  -f    Files (Show all files)"
-    Write-Host "  -r    Routes (API Endpoints & File-based routing)"
+    Write-Host "  -r    Routes (API Endpoints, Handlers & File-based routing)"
     Write-Host "  -i    Imports (Deep module extraction & destructured mapping)"
     Write-Host "  -e    Exports (Functions, Classes, Structs, Hooks)"
     Write-Host "  -d    Database (Models, Schemas, Services, ORMs)"
@@ -92,6 +92,21 @@ foreach ($filePath in $filesToProcess) {
     if (-not $content) { continue }
     $info.Lines = ($content -split '\r?\n').Count
 
+    # -- ROUTE PROCESSING HELPER --
+    $processRoute = {
+        param($match)
+        $method = if ($match.Groups['method'].Success) { $match.Groups['method'].Value.ToUpper() } else { "ANY" }
+        $route = if ($match.Groups['route'].Success) { $match.Groups['route'].Value } else { "/" }
+        $handler = if ($match.Groups['handler'].Success) { $match.Groups['handler'].Value.Trim("'", '"', "[", "]", " ") } else { "" }
+        
+        # Strip out anonymous inline functions
+        if ($handler -match '^(function|req|res|async|=>)$') { $handler = "" }
+        
+        $str = "[$method] $route"
+        if ($handler) { $str += " -> $handler" }
+        $info.Routes.Add($str) | Out-Null
+    }
+
     # -- FILE-BASED ROUTING --
     if ($relPath -match '/(app|pages|routes)/.*\.(tsx|jsx|js|ts|svelte|vue)$' -and $fileName -match '^(page|route|\+page|\+server|\+layout|layout|index)\.') {
         $info.Routes.Add("[File Route] $relPath") | Out-Null
@@ -139,12 +154,14 @@ foreach ($filePath in $filesToProcess) {
                 foreach ($imp in ($impBlock -split ',' | Where-Object { $_.Trim() })) { $info.Imports.Add("$module ($($imp.Trim()))") | Out-Null }
             }
             foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*export\s+(?:default\s+)?(?:async\s+)?(?:const|let|var|function|class|type|interface|enum)\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add($m.Groups['val'].Value) | Out-Null }
-            
-            # BUG FIX: Removed `(?i)` case-insensitivity to stop "user", "username", "userId" from registering as hooks!
             foreach ($m in [regex]::Matches($clean, '\buse[A-Z][a-zA-Z0-9_]*\b')) { $info.Exports.Add("[Hook] $($m.Value)") | Out-Null }
-            
-            foreach ($m in [regex]::Matches($clean, '(?i)(?:app|router|server|fastify)\.(?<method>get|post|put|delete|patch|all)\([''"](?<route>[^''"]+)[''"]')) { $info.Routes.Add("[$($m.Groups['method'].Value.ToUpper())] $($m.Groups['route'].Value)") | Out-Null }
             foreach ($m in [regex]::Matches($clean, '\b(?:model|enum|type)\s+(?<val>[A-Z]\w+)\s*\{')) { $info.Db.Add("Model: $($m.Groups['val'].Value)") | Out-Null }
+            
+            # ROUTES: Express / Fastify / Router (Inline or Controller linked)
+            foreach ($m in [regex]::Matches($clean, '(?i)\b(?:app|router|server|fastify|api)\.(?<method>get|post|put|delete|patch|all|use)\s*\(\s*[''"](?<route>[^''"]+)[''"](?:\s*,\s*(?<handler>[a-zA-Z0-9_.]+))?')) { &$processRoute $m }
+            
+            # ROUTES: NestJS / tRPC Decorators
+            foreach ($m in [regex]::Matches($clean, '(?ms)^\s*@(?<method>Get|Post|Put|Delete|Patch|All)\([''"](?<route>[^''"]*)[''"]\).{0,100}?(?:async\s+)?(?<handler>[a-zA-Z0-9_]+)\s*\(')) { &$processRoute $m }
         }
         
         '\.(py|pyi)$' {
@@ -166,14 +183,27 @@ foreach ($filePath in $filesToProcess) {
             }
             foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*(?:async\s+)?def\s+(?<val>[a-zA-Z0-9_]+)\(')) { $info.Exports.Add("def $($m.Groups['val'].Value)") | Out-Null }
             foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*class\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add("class $($m.Groups['val'].Value)") | Out-Null }
-            foreach ($m in [regex]::Matches($clean, '@(?:app|router|blueprint)\.(?<method>get|post|put|delete|route)\([''"](?<route>[^''"]+)[''"]')) { $info.Routes.Add("[$($m.Groups['method'].Value.ToUpper())] $($m.Groups['route'].Value)") | Out-Null }
+            
+            # ROUTES: FastAPI / Flask
+            foreach ($m in [regex]::Matches($clean, '(?ms)@(?:app|router|blueprint|api)\.(?<method>get|post|put|delete|patch|route)\s*\([''"](?<route>[^''"]+)[''"][^)]*\).{0,100}?def\s+(?<handler>[a-zA-Z0-9_]+)\s*\(')) { &$processRoute $m }
+            
+            # ROUTES: Django
+            foreach ($m in [regex]::Matches($clean, '\bpath\s*\(\s*[''"](?<route>[^''"]+)[''"]\s*,\s*(?<handler>[a-zA-Z0-9_.]+)')) { 
+                $m.Groups.Add("method", [System.Text.RegularExpressions.Group]::new("PATH", "PATH")) # Inject fake method
+                &$processRoute $m 
+            }
         }
         
         '\.(cs)$' {
             foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*using\s+(?<val>[a-zA-Z0-9_.]+);')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
             foreach ($m in [regex]::Matches($clean, '(?m)public\s+(?:static\s+)?(?:class|struct|interface|record|enum)\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add($m.Groups['val'].Value) | Out-Null }
-            foreach ($m in [regex]::Matches($clean, '\[Http(?<method>Get|Post|Put|Delete|Patch)(?:\([''"](?<route>[^''"]*)[''"]\))?\]')) { $info.Routes.Add("[$($m.Groups['method'].Value.ToUpper())] $($m.Groups['route'].Value)") | Out-Null }
             foreach ($m in [regex]::Matches($clean, 'DbSet<(?<val>\w+)>')) { $info.Db.Add("DbSet: $($m.Groups['val'].Value)") | Out-Null }
+            
+            # ROUTES: Minimal APIs
+            foreach ($m in [regex]::Matches($clean, '\b(?:app|endpoints)\.Map(?<method>Get|Post|Put|Delete|Patch|Group)\s*\(\s*[''"](?<route>[^''"]+)[''"]\s*,\s*(?<handler>[a-zA-Z0-9_.]+)')) { &$processRoute $m }
+            
+            # ROUTES: MVC Controllers
+            foreach ($m in [regex]::Matches($clean, '(?ms)\[Http(?<method>Get|Post|Put|Delete|Patch)(?:\([''"](?<route>[^''"]*)[''"]\))?\].{0,150}?(?:public|internal|protected|private)\s+(?:async\s+)?(?:[a-zA-Z0-9_<>\s\[\]]+)\s+(?<handler>[a-zA-Z0-9_]+)\s*\(')) { &$processRoute $m }
         }
 
         '\.(go)$' {
@@ -182,10 +212,12 @@ foreach ($filePath in $filesToProcess) {
             }
             foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*import\s+[''"](?<val>[^''"]+)[''"]')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
             foreach ($m in [regex]::Matches($clean, '(?m)^func\s+(?<val>[A-Z][a-zA-Z0-9_]*)\b')) { $info.Exports.Add("func $($m.Groups['val'].Value)") | Out-Null }
-            foreach ($m in [regex]::Matches($clean, 'http\.HandleFunc\([''"](?<route>[^''"]+)[''"]|\.(?<method>GET|POST|PUT|DELETE|PATCH)\([''"](?<route>[^''"]+)[''"]')) { 
-                $method = if ($m.Groups['method'].Success) { $m.Groups['method'].Value } else { "ANY" }
-                $info.Routes.Add("[$method] $($m.Groups['route'].Value)") | Out-Null 
-            }
+            
+            # ROUTES: net/http
+            foreach ($m in [regex]::Matches($clean, 'http\.HandleFunc\s*\(\s*[''"](?<route>[^''"]+)[''"]\s*,\s*(?<handler>[a-zA-Z0-9_.]+)')) { &$processRoute $m }
+            
+            # ROUTES: Gin / Echo / Fiber
+            foreach ($m in [regex]::Matches($clean, '\.(?<method>GET|POST|PUT|DELETE|PATCH|Any|Group)\s*\(\s*[''"](?<route>[^''"]+)[''"]\s*,\s*(?<handler>[a-zA-Z0-9_.]+)')) { &$processRoute $m }
         }
 
         '\.(rs)$' {
@@ -196,13 +228,19 @@ foreach ($filePath in $filesToProcess) {
         '\.(php)$' {
             foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*use\s+(?<val>[a-zA-Z0-9_\\]+);')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
             foreach ($m in [regex]::Matches($clean, '(?m)^[ \t]*(?:public\s+)?(?:class|function)\s+(?<val>[a-zA-Z0-9_]+)')) { $info.Exports.Add($m.Groups['val'].Value) | Out-Null }
-            foreach ($m in [regex]::Matches($clean, 'Route::(?<method>get|post|put|delete|any|match)\([''"](?<route>[^''"]+)[''"]')) { $info.Routes.Add("[$($m.Groups['method'].Value.ToUpper())] $($m.Groups['route'].Value)") | Out-Null }
+            
+            # ROUTES: Laravel
+            foreach ($m in [regex]::Matches($clean, 'Route::(?<method>get|post|put|delete|any|match)\s*\(\s*[''"](?<route>[^''"]+)[''"]\s*,\s*(?:\[\s*)?(?<handler>[a-zA-Z0-9_\\@:'']+)')) { &$processRoute $m }
         }
 
         '\.(ps1|psm1)$' {
             foreach ($m in [regex]::Matches($clean, '(?m)^\s*(?:\.|using\s+module|Import-Module)\s+(?<val>[^\s\r\n;]+)')) { $info.Imports.Add($m.Groups['val'].Value) | Out-Null }
             foreach ($m in [regex]::Matches($clean, '(?i)(?m)^function\s+(?<val>[a-zA-Z0-9_-]+)')) { $info.Exports.Add("func $($m.Groups['val'].Value)") | Out-Null }
-            foreach ($m in [regex]::Matches($clean, '(?i)Invoke-(RestMethod|WebRequest).*?(?:-Uri|-Url)\s+[''"]?(?<val>http[^''"\s]+)')) { $info.Routes.Add("[API CALL] $($m.Groups['val'].Value)") | Out-Null }
+            
+            # ROUTES: PowerShell API Calls
+            foreach ($m in [regex]::Matches($clean, '(?i)Invoke-(RestMethod|WebRequest).*?(?:-Uri|-Url)\s+[''"]?(?<val>http[^''"\s]+)')) { 
+                $info.Routes.Add("[CALL] $($m.Groups['val'].Value)") | Out-Null
+            }
         }
     }
     
@@ -238,7 +276,6 @@ foreach ($entry in $data) {
     }
 }
 
-# BUG FIX: String Formatting corrected to avoid argument injection parsing errors in PowerShell
 Log "`n$('-' * 70)" "Cyan"
 $totalLines = ($data | Measure-Object -Property Lines -Sum).Sum
 $fileCount = $data.Count
