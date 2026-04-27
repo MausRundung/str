@@ -42,6 +42,12 @@ function Add-ToPath {
     if (-not $procExists) { $env:Path = ($env:Path.TrimEnd(';') + ";" + $Dir) }
 }
 
+function Get-DefaultInstallDir {
+    param([ValidateSet('User','Machine')][string]$Scope = 'User')
+    if ($Scope -eq 'Machine') { return (Join-Path $env:ProgramFiles "str") }
+    return (Join-Path $env:LOCALAPPDATA "str")
+}
+
 function Remove-FromPath {
     param(
         [Parameter(Mandatory)][string]$Dir,
@@ -79,12 +85,13 @@ function Remove-FromPath {
 
 function Install-Str {
     param(
-        [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "str"),
+        [string]$InstallDir,
         [ValidateSet('User','Machine')][string]$Scope = 'User',
         [switch]$Force
     )
 
     if ($Scope -eq 'Machine' -and -not (Test-IsAdmin)) { throw "Machine install requires an elevated PowerShell (Run as Administrator)." }
+    if ([string]::IsNullOrWhiteSpace($InstallDir)) { $InstallDir = Get-DefaultInstallDir -Scope $Scope }
 
     $sourceDir = $PSScriptRoot
     if ([string]::IsNullOrEmpty($sourceDir)) {
@@ -120,11 +127,12 @@ function Install-Str {
 
 function Uninstall-Str {
     param(
-        [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "str"),
+        [string]$InstallDir,
         [ValidateSet('User','Machine')][string]$Scope = 'User'
     )
 
     if ($Scope -eq 'Machine' -and -not (Test-IsAdmin)) { throw "Machine uninstall requires an elevated PowerShell (Run as Administrator)." }
+    if ([string]::IsNullOrWhiteSpace($InstallDir)) { $InstallDir = Get-DefaultInstallDir -Scope $Scope }
     Remove-FromPath -Dir $InstallDir -Scope $Scope
     try {
         if (Test-Path $InstallDir -PathType Container) {
