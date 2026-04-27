@@ -12,6 +12,21 @@ function Test-IsAdmin {
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Send-EnvironmentChangeBroadcast {
+    try {
+        Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, int Msg, System.IntPtr wParam, string lParam, int fuFlags, int uTimeout, out System.IntPtr lpdwResult);
+"@ -ErrorAction SilentlyContinue | Out-Null
+        $HWND_BROADCAST = [IntPtr]0xffff
+        $WM_SETTINGCHANGE = 0x001A
+        $SMTO_ABORTIFHUNG = 0x0002
+        $result = [IntPtr]::Zero
+        [Win32.NativeMethods]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [IntPtr]::Zero, "Environment", $SMTO_ABORTIFHUNG, 2000, [ref]$result) | Out-Null
+    } catch {
+    }
+}
+
 function Add-ToPath {
     param(
         [Parameter(Mandatory)][string]$Dir,
@@ -110,15 +125,20 @@ function Install-Str {
 
     $files = Get-ChildItem -LiteralPath $sourceDir -File
     foreach ($f in $files) {
+        if ($f.Name -ieq "str.ps1") {
+            Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $InstallDir "str-main.ps1") -Force
+            continue
+        }
         Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $InstallDir $f.Name) -Force
     }
 
     $shimPath = Join-Path $InstallDir "str.cmd"
     $shim = "@echo off`r`n" +
-            "powershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0str.ps1`" %*`r`n"
+            "powershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0str-main.ps1`" %*`r`n"
     Set-Content -LiteralPath $shimPath -Value $shim -Encoding ASCII -Force
 
     Add-ToPath -Dir $InstallDir -Scope $Scope
+    Send-EnvironmentChangeBroadcast
 
     Write-Host "Installed to: $InstallDir" -ForegroundColor Green
     Write-Host "Command available: str" -ForegroundColor Cyan
@@ -134,6 +154,7 @@ function Uninstall-Str {
     if ($Scope -eq 'Machine' -and -not (Test-IsAdmin)) { throw "Machine uninstall requires an elevated PowerShell (Run as Administrator)." }
     if ([string]::IsNullOrWhiteSpace($InstallDir)) { $InstallDir = Get-DefaultInstallDir -Scope $Scope }
     Remove-FromPath -Dir $InstallDir -Scope $Scope
+    Send-EnvironmentChangeBroadcast
     try {
         if (Test-Path $InstallDir -PathType Container) {
             Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Stop
