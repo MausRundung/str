@@ -1,3 +1,170 @@
+function Get-NormalizedPathEntry {
+    param([string]$PathEntry)
+    if ([string]::IsNullOrWhiteSpace($PathEntry)) { return "" }
+    $expanded = [Environment]::ExpandEnvironmentVariables($PathEntry).Trim()
+    if ([string]::IsNullOrWhiteSpace($expanded)) { return "" }
+    return $expanded.TrimEnd('\')
+}
+
+function Test-IsAdmin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p = [Security.Principal.WindowsPrincipal]::new($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Add-ToPath {
+    param(
+        [Parameter(Mandatory)][string]$Dir,
+        [ValidateSet('User','Machine')][string]$Scope = 'User'
+    )
+
+    $target = (Get-NormalizedPathEntry -PathEntry $Dir)
+    if (-not $target) { throw "Invalid directory for PATH: $Dir" }
+
+    $envTarget = if ($Scope -eq 'Machine') { [EnvironmentVariableTarget]::Machine } else { [EnvironmentVariableTarget]::User }
+    $current = [Environment]::GetEnvironmentVariable("Path", $envTarget)
+    $parts = @()
+    if ($current) { $parts = $current -split ';' | ForEach-Object { Get-NormalizedPathEntry -PathEntry $_ } | Where-Object { $_ } }
+    $exists = $false
+    foreach ($p in $parts) {
+        if ($p -ieq $target) { $exists = $true; break }
+    }
+    if (-not $exists) {
+        $new = if ($current) { ($current.TrimEnd(';') + ";" + $Dir) } else { $Dir }
+        [Environment]::SetEnvironmentVariable("Path", $new, $envTarget)
+    }
+
+    $procParts = $env:Path -split ';' | ForEach-Object { Get-NormalizedPathEntry -PathEntry $_ } | Where-Object { $_ }
+    $procExists = $false
+    foreach ($p in $procParts) {
+        if ($p -ieq $target) { $procExists = $true; break }
+    }
+    if (-not $procExists) { $env:Path = ($env:Path.TrimEnd(';') + ";" + $Dir) }
+}
+
+function Remove-FromPath {
+    param(
+        [Parameter(Mandatory)][string]$Dir,
+        [ValidateSet('User','Machine')][string]$Scope = 'User'
+    )
+
+    $target = (Get-NormalizedPathEntry -PathEntry $Dir)
+    if (-not $target) { return }
+
+    $envTarget = if ($Scope -eq 'Machine') { [EnvironmentVariableTarget]::Machine } else { [EnvironmentVariableTarget]::User }
+    $current = [Environment]::GetEnvironmentVariable("Path", $envTarget)
+    if ($current) {
+        $parts = $current -split ';'
+        $kept = New-Object System.Collections.Generic.List[string]
+        foreach ($p in $parts) {
+            $np = Get-NormalizedPathEntry -PathEntry $p
+            if ($np -and ($np -ieq $target)) { continue }
+            if ($p) { $kept.Add($p) }
+        }
+        $new = ($kept.ToArray() -join ';').TrimEnd(';')
+        [Environment]::SetEnvironmentVariable("Path", $new, $envTarget)
+    }
+
+    if ($env:Path) {
+        $procParts = $env:Path -split ';'
+        $procKept = New-Object System.Collections.Generic.List[string]
+        foreach ($p in $procParts) {
+            $np = Get-NormalizedPathEntry -PathEntry $p
+            if ($np -and ($np -ieq $target)) { continue }
+            if ($p) { $procKept.Add($p) }
+        }
+        $env:Path = ($procKept.ToArray() -join ';').TrimEnd(';')
+    }
+}
+
+function Install-Str {
+    param(
+        [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "str"),
+        [ValidateSet('User','Machine')][string]$Scope = 'User',
+        [switch]$Force
+    )
+
+    if ($Scope -eq 'Machine' -and -not (Test-IsAdmin)) { throw "Machine install requires an elevated PowerShell (Run as Administrator)." }
+
+    $sourceDir = $PSScriptRoot
+    if ([string]::IsNullOrEmpty($sourceDir)) {
+        if ($PSCommandPath) { $sourceDir = Split-Path -Parent $PSCommandPath } else { $sourceDir = (Get-Location).Path }
+    }
+
+    if (-not (Test-Path $sourceDir -PathType Container)) { throw "Cannot resolve source directory." }
+
+    if (Test-Path $InstallDir -PathType Container) {
+        if ($Force) {
+            try { Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Stop } catch {}
+        }
+    }
+
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+    $files = Get-ChildItem -LiteralPath $sourceDir -File
+    foreach ($f in $files) {
+        Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $InstallDir $f.Name) -Force
+    }
+
+    $shimPath = Join-Path $InstallDir "str.cmd"
+    $shim = "@echo off`r`n" +
+            "powershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0str.ps1`" %*`r`n"
+    Set-Content -LiteralPath $shimPath -Value $shim -Encoding ASCII -Force
+
+    Add-ToPath -Dir $InstallDir -Scope $Scope
+
+    Write-Host "Installed to: $InstallDir" -ForegroundColor Green
+    Write-Host "Command available: str" -ForegroundColor Cyan
+    Write-Host "If a shell still can't find it, open a new terminal." -ForegroundColor Gray
+}
+
+function Uninstall-Str {
+    param(
+        [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "str"),
+        [ValidateSet('User','Machine')][string]$Scope = 'User'
+    )
+
+    if ($Scope -eq 'Machine' -and -not (Test-IsAdmin)) { throw "Machine uninstall requires an elevated PowerShell (Run as Administrator)." }
+    Remove-FromPath -Dir $InstallDir -Scope $Scope
+    try {
+        if (Test-Path $InstallDir -PathType Container) {
+            Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Stop
+        }
+        Write-Host "Uninstalled from: $InstallDir" -ForegroundColor Green
+    } catch {
+        Write-Host "Removed from PATH, but could not delete: $InstallDir" -ForegroundColor Yellow
+        Write-Host "Close any terminals using it, then delete the folder manually." -ForegroundColor Gray
+    }
+}
+
+if ($args.Count -gt 0) {
+    $verb = $args[0].ToString().ToLowerInvariant()
+    if ($verb -in @("install","--install","-install")) {
+        $dir = $null
+        $scope = "User"
+        $force = $false
+        for ($i = 1; $i -lt $args.Count; $i++) {
+            $a = $args[$i]
+            if ($a -eq "--dir") { if ($i + 1 -lt $args.Count) { $dir = $args[$i + 1]; $i++; continue } }
+            if ($a -eq "--machine") { $scope = "Machine"; continue }
+            if ($a -eq "--force") { $force = $true; continue }
+        }
+        if ($dir) { Install-Str -InstallDir $dir -Scope $scope -Force:$force } else { Install-Str -Scope $scope -Force:$force }
+        exit
+    }
+    if ($verb -in @("uninstall","remove","--uninstall","-uninstall")) {
+        $dir = $null
+        $scope = "User"
+        for ($i = 1; $i -lt $args.Count; $i++) {
+            $a = $args[$i]
+            if ($a -eq "--dir") { if ($i + 1 -lt $args.Count) { $dir = $args[$i + 1]; $i++; continue } }
+            if ($a -eq "--machine") { $scope = "Machine"; continue }
+        }
+        if ($dir) { Uninstall-Str -InstallDir $dir -Scope $scope } else { Uninstall-Str -Scope $scope }
+        exit
+    }
+}
+
 $Path = "."
 $Files = $false; $Routes = $false; $Imports = $false; $Sockets = $false; $Database = $false; $Exports = $false; $SummaryOnly = $false; $CheckUnused = $false
 $FullFileDump = $false
@@ -23,8 +190,11 @@ foreach ($arg in $args) {
 if ($FullFileDump) { $ExportFile = "export.md" }
 
 if ($Path -eq "help") {
-    Write-Host "`n=== POLYGLOT ARCHITECT v4.3 (ULTRA-FAST DEEP SCAN) ===" -ForegroundColor Yellow
+    Write-Host "`n=== ARCHITECT v4.3 (FAST DEEP SCAN) ===" -ForegroundColor Yellow
     Write-Host "Usage: str [Path] [Flags|ff][--exportname]" -ForegroundColor Cyan
+    Write-Host "Install: powershell -NoProfile -ExecutionPolicy Bypass -File .\str.ps1 install" -ForegroundColor Cyan
+    Write-Host "Uninstall: str uninstall" -ForegroundColor Cyan
+    Write-Host "Install opts: --dir <path>  --machine  --force" -ForegroundColor Gray
     Write-Host "`nFLAGS:" -ForegroundColor Gray
     Write-Host "  ff    Full file dump -> export.md (writes //filepath then file content)"
     Write-Host "  -f    Files (Show all files)"
